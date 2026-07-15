@@ -1,5 +1,5 @@
 {
-  "trained_at": "2026-07-15T07:13:20.120640+00:00",
+  "trained_at": "2026-07-15T17:37:24.941227+00:00",
   "model_type": "RandomForestClassifier",
   "target": "dose out-of-tolerance (|actual-setpoint| > tolerance)",
   "tolerance_pct": 2.0,
@@ -8,89 +8,89 @@
   "n_test": 250,
   "positive_rate": 0.333,
   "metrics": {
-    "accuracy": 0.828,
-    "roc_auc": 0.89,
+    "accuracy": 0.812,
+    "roc_auc": 0.893,
     "confusion_matrix": [
       [
-        142,
-        25
+        135,
+        32
       ],
       [
-        18,
-        65
+        15,
+        68
       ]
     ],
-    "precision": 0.722,
-    "recall": 0.783,
-    "f1_score": 0.751,
+    "precision": 0.68,
+    "recall": 0.819,
+    "f1_score": 0.743,
     "per_class": {
       "on_target": {
-        "precision": 0.887,
-        "recall": 0.85,
-        "f1_score": 0.869,
+        "precision": 0.9,
+        "recall": 0.808,
+        "f1_score": 0.852,
         "support": 167
       },
       "flagged": {
-        "precision": 0.722,
-        "recall": 0.783,
-        "f1_score": 0.751,
+        "precision": 0.68,
+        "recall": 0.819,
+        "f1_score": 0.743,
         "support": 83
       }
     },
     "cross_validation": {
       "accuracy": {
-        "mean": 0.817,
-        "std": 0.027,
+        "mean": 0.815,
+        "std": 0.024,
         "folds": [
-          0.83,
-          0.8,
-          0.78,
-          0.86,
-          0.815
+          0.825,
+          0.785,
+          0.805,
+          0.855,
+          0.805
         ]
       },
       "roc_auc": {
-        "mean": 0.886,
-        "std": 0.016,
+        "mean": 0.887,
+        "std": 0.018,
         "folds": [
-          0.868,
-          0.893,
-          0.872,
-          0.912,
-          0.885
+          0.87,
+          0.874,
+          0.883,
+          0.92,
+          0.889
         ]
       },
       "precision": {
-        "mean": 0.702,
-        "std": 0.047,
+        "mean": 0.699,
+        "std": 0.042,
         "folds": [
-          0.709,
-          0.69,
-          0.646,
-          0.788,
-          0.679
+          0.711,
+          0.662,
+          0.675,
+          0.776,
+          0.671
         ]
       },
       "recall": {
-        "mean": 0.79,
-        "std": 0.041,
+        "mean": 0.787,
+        "std": 0.029,
         "folds": [
-          0.836,
+          0.806,
           0.731,
-          0.761,
+          0.806,
           0.788,
-          0.833
+          0.803
         ]
       },
       "f1": {
-        "mean": 0.742,
-        "std": 0.034,
+        "mean": 0.74,
+        "std": 0.029,
         "folds": [
-          0.767,
-          0.71,
-          0.699,
-          0.788,
-          0.748
+          0.755,
+          0.695,
+          0.735,
+          0.782,
+          0.731
         ]
       }
     }
@@ -98,31 +98,11 @@
   "feature_importances": [
     {
       "feature": "setpoint",
-      "importance": 0.2709
-    },
-    {
-      "feature": "log_setpoint",
-      "importance": 0.2666
+      "importance": 0.5898
     },
     {
       "feature": "material_code",
-      "importance": 0.24
-    },
-    {
-      "feature": "product_name",
-      "importance": 0.101
-    },
-    {
-      "feature": "quantity",
-      "importance": 0.0505
-    },
-    {
-      "feature": "is_micro",
-      "importance": 0.0463
-    },
-    {
-      "feature": "category",
-      "importance": 0.0247
+      "importance": 0.4102
     }
   ],
   "options": {

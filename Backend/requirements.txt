@@ -13,10 +13,12 @@ reportlab
 Pillow
 resend
 
-# Hercules AI Assistant
+# --- Hercules AI Assistant (generative + predictive ML) ---
+python-dotenv
+google-genai
+requests
+anthropic
+scikit-learn
 pandas
 numpy
-scikit-learn
 joblib
-requests
-google-genai

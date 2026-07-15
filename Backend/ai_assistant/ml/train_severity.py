@@ -58,6 +58,7 @@ def _build_frame() -> pd.DataFrame:
     for r in rows:
         feat = features.row_to_features(r)
         feat["severity"] = severity.severity_band(r["deviation_pct"], data.TOLERANCE_PCT)
+        feat["product_name"] = r["product_name"]  # for the options list, not a model feature
         records.append(feat)
     return pd.DataFrame.from_records(records)
 
@@ -85,7 +86,7 @@ def train() -> dict:
         ]
     )
     clf = RandomForestClassifier(
-        n_estimators=300,
+        n_estimators=50,  # matches 300 trees on CV; see train.py for the sweep
         max_depth=None,
         min_samples_leaf=2,
         class_weight="balanced",

@@ -8,6 +8,7 @@ answers) but never invents them — which keeps the demo trustworthy.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from statistics import mean
 
 from . import data
@@ -102,6 +103,30 @@ def top_overdosed(n: int = 5, min_count: int = 2) -> list[dict]:
 def top_underdosed(n: int = 5, min_count: int = 2) -> list[dict]:
     mats = material_accuracy(min_count=min_count)
     return sorted(mats, key=lambda m: m["mean_dev_pct"])[:n]
+
+
+def material_history(material_code: str, limit: int = 20) -> tuple[list[dict], int]:
+    """Every individual dose of one material, oldest-to-newest, capped to the
+    most recent `limit`. Returns (rows, total_count) so a chart can note when
+    it's showing a subset ("most recent 20 of 58 doses")."""
+    rows = [r for r in data.scored_rows() if r["material_code"] == material_code]
+    rows.sort(key=lambda r: r["start"] or datetime.min)
+    return rows[-limit:], len(rows)
+
+
+def doses_by_status(status: str, limit: int = 150) -> tuple[list[dict], int]:
+    """Individual dose rows for one KPI category, most-recent first, capped so
+    a popup listing 667 "on target" doses doesn't try to render them all.
+    status: "all" | "on_target" | "over" | "under" | "flagged" (over+under).
+    Returns (rows, total_count) so the caller can note when it's a subset.
+    """
+    rows = data.scored_rows()
+    if status == "flagged":
+        rows = [r for r in rows if r["status"] in ("over", "under")]
+    elif status != "all":
+        rows = [r for r in rows if r["status"] == status]
+    rows = sorted(rows, key=lambda r: r["start"] or datetime.min, reverse=True)
+    return rows[:limit], len(rows)
 
 
 def worst_materials(n: int = 5, min_count: int = 2) -> list[dict]:

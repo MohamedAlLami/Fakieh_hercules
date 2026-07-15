@@ -1,9 +1,10 @@
 """Provider-agnostic text generation.
 
 The AI Assistant does not care *which* model answers — it asks for text and
-gets text. We try providers in order (default: Gemini, then Claude) and use the
-first one that has a key and succeeds. This lets the demo run for free on a
-Google AI Studio key, and upgrade to Claude by just adding ANTHROPIC_API_KEY.
+gets text. We try providers in order (default: Claude Sonnet 5 first, then
+Gemini, then DeepSeek) and use the first one that has a key and succeeds. If
+ANTHROPIC_API_KEY isn't set, Claude is silently skipped and the chain falls
+through to Gemini (free AI Studio key) — nothing breaks either way.
 
 Keys are read from the environment (a Backend/.env file is loaded if present):
   * GEMINI_API_KEY (or GOOGLE_API_KEY) — free from https://aistudio.google.com
@@ -29,14 +30,16 @@ except Exception:
 # "gemini-flash-lite-latest" is a fast, free-tier alias that answers in ~1s
 # (the non-lite flash alias currently routes to a slow thinking model).
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
-# Comma-separated order, e.g. "gemini,deepseek,claude".
+# Comma-separated order, e.g. "claude,gemini,deepseek". Claude Sonnet 5 tried
+# first; if ANTHROPIC_API_KEY isn't set it's skipped automatically and this
+# falls through to Gemini, then DeepSeek.
 PROVIDER_ORDER = [
     p.strip().lower()
-    for p in os.getenv("AI_PROVIDER_ORDER", "gemini,deepseek,claude").split(",")
+    for p in os.getenv("AI_PROVIDER_ORDER", "claude,gemini,deepseek").split(",")
     if p.strip()
 ]
 

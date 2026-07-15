@@ -17,7 +17,7 @@ from collections import Counter
 from functools import lru_cache
 
 from . import cached_answers, data, insights, providers
-from .ml import predictor, predictor_severity
+from .ml import predictor_dose
 
 SYSTEM_PROMPT = (
     "You are Hercules AI, the production analyst for the Fakieh poultry feed mill. "
@@ -29,7 +29,10 @@ SYSTEM_PROMPT = (
     "(4) A positive deviation means over-dosing, negative means under-dosing. "
     "(5) No preamble like 'Based on the data'. Write for a busy operator. "
     "(6) Output ONLY the final answer prose — never include planning, notes to yourself, "
-    "meta-commentary, JSON, or code blocks."
+    "meta-commentary, JSON, or code blocks. "
+    "(7) If the user asks for a graph, chart, or visualization, don't say you can't draw one — a chart "
+    "is attached automatically by a separate system whenever it's relevant. Just describe the numbers "
+    "the chart would show, in prose, as you normally would."
 )
 
 # How the model should hand back a chart when one helps the answer.
@@ -85,13 +88,50 @@ def _context_json() -> str:
     return json.dumps(ctx, ensure_ascii=False)
 
 
-def _auto_chart(question: str):
+_CHART_INTENT_WORDS = ("graph", "chart", "plot", "visualiz", "visualis")
+
+
+def _material_chart(code: str, name: str) -> dict | None:
+    """Per-dose deviation history for one specific ingredient, e.g. every time
+    Water was dosed. Signed values so over/under-dosing show as bars above vs
+    below zero. Capped so 50+ instances don't turn into an unreadable chart."""
+    rows, total = insights.material_history(code, limit=20)
+    if not rows:
+        return None
+    labels = [r["batch_name"][:16] if r.get("batch_name") else f"dose {i + 1}" for i, r in enumerate(rows)]
+    values = [round(r["deviation_pct"], 1) for r in rows if r.get("deviation_pct") is not None]
+    if not values:
+        return None
+    title = f"{name} — deviation per dose"
+    if total > len(rows):
+        title += f" (most recent {len(rows)} of {total})"
+    return {"type": "bar", "title": title, "labels": labels, "values": values, "unit": "%"}
+
+
+def _auto_chart(question: str, prior_question: str | None = None):
     """Attach a relevant precomputed chart based on the question's intent.
 
     Used when the model doesn't emit its own chart block, so common demo
     questions still get a visual — reliably and grounded in real numbers.
+
+    Accepts the previous question too: a follow-up like "make it as a graph"
+    names no material itself, so if the current question doesn't resolve to
+    one, we fall back to whatever ingredient was named last turn.
     """
     q = (question or "").lower()
+
+    # Explicit request naming (or inheriting from context) a specific
+    # ingredient — a chart of that ingredient's own dose history, not a
+    # generic ranked-list chart.
+    code, name, _s, _e = _find_material(question)
+    if not code and prior_question:
+        code, name, _s, _e = _find_material(prior_question)
+    if code:
+        wants_chart = any(w in q for w in _CHART_INTENT_WORDS) or "instance" in q or "every time" in q
+        if wants_chart:
+            chart = _material_chart(code, name)
+            if chart:
+                return chart
 
     def spec(title, rows, key, unit="%"):
         rows = [r for r in rows if r.get(key) is not None][:6]
@@ -220,7 +260,7 @@ def _clean_material_name(name: str) -> str:
 def _material_index() -> list[tuple[str, str, str]]:
     """(lowercased matchable name, material_code, display name), longest first
     so a specific match wins over a shorter incidental substring."""
-    info = predictor.model_info()
+    info = predictor_dose.model_info()
     entries = []
     for m in info["options"]["materials"]:
         name = m["material_name"]
@@ -293,7 +333,7 @@ def _try_predictive_answer(question: str) -> dict | None:
     q = question.lower()
     if not any(kw in q for kw in _PREDICTIVE_KEYWORDS):
         return None
-    if not predictor.is_ready() or not predictor_severity.is_ready():
+    if not predictor_dose.is_ready():
         return None
 
     code, material_name, start, end = _find_material(question)
@@ -303,20 +343,25 @@ def _try_predictive_answer(question: str) -> dict | None:
     setpoint = _extract_setpoint(question, start, end)
     used_default = setpoint is None
     if used_default:
-        meta = predictor.model_info()
+        meta = predictor_dose.model_info()
         setpoint = meta.get("material_defaults", {}).get(code, {}).get("typical_setpoint")
     if not setpoint or setpoint <= 0:
         return _clarify(question, f"the target weight for {material_name} (in kg)")
 
     product = _material_common_product().get(code)
-    risk = predictor.predict(material_code=code, product_name=product, setpoint=setpoint)
-    sev = predictor_severity.predict(material_code=code, product_name=product, setpoint=setpoint)
+    # ONE model gives risk + severity + direction in a single call.
+    pred = predictor_dose.predict(material_code=code, product_name=product, setpoint=setpoint)
+
+    direction_note = ""
+    if pred["risk_pct"] >= 50:
+        direction_note = (f", most likely to run {'high' if pred['direction'] == 'over' else 'low'} "
+                          f"({pred['direction_confidence_pct']}% confidence)")
 
     weight_note = f" (using its typical target of {setpoint:.2f} kg, since none was given)" if used_default else f" at {setpoint:.2f} kg"
     answer = (
-        f"For {material_name}{weight_note}, the trained model predicts a {risk['risk_pct']}% chance "
-        f"of coming out of tolerance ({risk['band']} risk), with the most likely outcome being "
-        f'"{sev["severity_label"]}" ({sev["confidence_pct"]}% confidence). This is a live prediction '
+        f"For {material_name}{weight_note}, the model predicts a {pred['risk_pct']}% chance "
+        f"of coming out of tolerance ({pred['band']} risk){direction_note}, with the most likely severity being "
+        f'"{pred["severity_label"]}" ({pred["severity_confidence_pct"]}% confidence). This is a live prediction '
         f"from the trained model for this specific dose, not a historical average."
     )
     return {
@@ -325,12 +370,46 @@ def _try_predictive_answer(question: str) -> dict | None:
         "chart": None,
         "provider": "ml-model",
         "cached": False,
-        "ml_prediction": {"risk": risk, "severity": sev},
+        "ml_prediction": pred,
     }
 
 
-def ask(question: str) -> dict:
-    """Answer a free-text question about the batch data (+ optional chart)."""
+def _history_block(history: list[dict] | None) -> tuple[str, str | None]:
+    """Turn the last few chat turns into a short context block for the prompt,
+    and separately return the last thing the user asked (so a follow-up like
+    "make it as a graph" can inherit which ingredient/topic "it" refers to).
+
+    ask() has no memory otherwise — every call was previously answered from
+    scratch, so a pronoun-only follow-up had nothing to resolve against and
+    the model would fall back to generic dataset trivia instead of admitting
+    it didn't know what "it" meant.
+    """
+    if not history:
+        return "", None
+    recent = [t for t in history[-6:] if (t.get("text") or "").strip()]
+    if not recent:
+        return "", None
+    lines = [
+        f"{'User' if t.get('role') == 'user' else 'Hercules AI'}: {t['text'].strip()}"
+        for t in recent
+    ]
+    block = (
+        "RECENT CONVERSATION (use this only to resolve references like 'it'/'that'/'those' "
+        "in the new question — answer using the DATA below, don't just repeat an old answer):\n"
+        + "\n".join(lines) + "\n\n"
+    )
+    prior_user_turns = [t["text"] for t in recent if t.get("role") == "user"]
+    prior_question = prior_user_turns[-1] if prior_user_turns else None
+    return block, prior_question
+
+
+def ask(question: str, history: list[dict] | None = None) -> dict:
+    """Answer a free-text question about the batch data (+ optional chart).
+
+    `history` is the recent chat turns (oldest first), each a dict with
+    "role" ("user"/"ai") and "text" — used to resolve follow-up references,
+    not re-litigated as new questions.
+    """
     question = (question or "").strip()
     if not question:
         return {"question": question, "answer": "Please ask a question about the dosing data.",
@@ -340,7 +419,9 @@ def ask(question: str) -> dict:
     if predictive is not None:
         return predictive
 
+    history_text, prior_question = _history_block(history)
     prompt = (
+        history_text +
         f"QUESTION: {question}\n\n"
         "Answer in 2-4 sentences of plain prose (a short markdown list is fine only if the user asks to "
         "rank or list items). Cite specific ingredient/product/batch names and figures from the DATA.\n\n"
@@ -350,7 +431,7 @@ def ask(question: str) -> dict:
 
     if result["ok"]:
         answer = result["text"].strip()
-        chart = _auto_chart(question)  # reliable, grounded chart by question intent
+        chart = _auto_chart(question, prior_question)  # reliable, grounded chart by question intent
         return {
             "question": question,
             "answer": answer,

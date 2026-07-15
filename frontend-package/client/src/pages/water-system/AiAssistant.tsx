@@ -12,25 +12,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
   Sparkles,
   Bot,
-  BrainCircuit,
   Send,
   Loader2,
   AlertTriangle,
   CheckCircle2,
   Target,
   TrendingUp,
+  TrendingDown,
   Activity,
   Radio,
   RefreshCw,
   Play,
   Pause,
-  ShieldCheck,
-  Gauge,
   FlaskConical,
   X,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
+  Wrench,
 } from 'lucide-react'
 
 const AI = '/api/ai'
@@ -57,10 +60,25 @@ interface Overall {
   under_pct: number
   flagged: number
 }
-interface ProductRow {
-  product_name: string
-  accuracy_score: number
+interface MaterialAccuracy {
+  material_name: string
+  material_code: string
   count: number
+  mean_dev_pct: number
+  mean_abs_dev_pct: number
+  over: number
+  under: number
+  on_target: number
+}
+interface DoseRow {
+  material_name: string
+  product_name: string
+  batch_name: string
+  setpoint: number
+  actual: number | null
+  deviation_pct: number | null
+  status: string
+  date: string | null
 }
 interface Insights {
   summary: string
@@ -69,8 +87,7 @@ interface Insights {
   insights: {
     meta: { row_count: number; batch_count: number; product_count: number }
     overall: Overall
-    worst_materials: any[]
-    product_summary: ProductRow[]
+    worst_materials: MaterialAccuracy[]
   }
 }
 interface ChartSpec {
@@ -87,29 +104,38 @@ interface ChatMsg {
   provider?: string | null
   cached?: boolean
 }
-interface MLInfo {
-  metrics: { accuracy: number; roc_auc: number | null }
+// The single Dose-Quality model: its metadata (dropdown options + the derived
+// metrics for risk / severity / direction) and one prediction that carries all
+// three answers + the 5-bucket probability spectrum.
+interface DoseInfo {
+  classes: string[]
+  class_labels: Record<string, string>
   n_total: number
-  n_train: number
-  n_test: number
-  positive_rate: number
+  metrics: {
+    risk: { accuracy: number; roc_auc: number }
+    severity: { accuracy: number; macro_f1: number }
+    direction: { accuracy: number; roc_auc: number }
+  }
   options: {
     materials: { material_code: string; material_name: string }[]
     products: string[]
   }
 }
-interface Prediction {
+interface DosePrediction {
   risk_pct: number
   band: string
+  flagged: boolean
   prediction: string
-  inputs: { material_name: string; product_name: string; setpoint: number }
-}
-interface SeverityPrediction {
   severity: string
   severity_label: string
-  confidence_pct: number
-  probabilities: Record<string, number>
-  inputs: { material_name: string; product_name: string; setpoint: number }
+  severity_confidence_pct: number
+  direction: 'over' | 'under'
+  direction_label: string
+  direction_confidence_pct: number
+  top_class: string
+  top_class_label: string
+  class_probabilities: Record<string, number>
+  inputs: { material_name: string; product_name?: string; setpoint: number }
 }
 
 // ---- Live-monitor types ----------------------------------------------------
@@ -132,6 +158,8 @@ interface LiveFeedItem {
   correct: boolean
   severity?: string | null
   severity_label?: string | null
+  direction?: string | null
+  direction_label?: string | null
   recommendation: string
   model_version: number
   at: string
@@ -160,7 +188,7 @@ interface LiveStats {
 }
 interface LiveNotif {
   id: string
-  kind: 'drift' | 'retrain'
+  kind: 'drift' | 'retrain' | 'maintenance'
   title: string
   message: string
   at: string
@@ -208,13 +236,14 @@ function bandColor(band: string) {
   return 'text-emerald-400 bg-emerald-500/15 border-emerald-500/40'
 }
 
-const SEVERITY_META: Record<string, { label: string; text: string; bar: string; border: string }> = {
-  on_target: { label: 'On target', text: 'text-emerald-400', bar: 'bg-emerald-500', border: 'border-emerald-500/40' },
-  watch: { label: 'Watch', text: 'text-amber-400', bar: 'bg-amber-500', border: 'border-amber-500/40' },
-  severe: { label: 'Severe', text: 'text-red-400', bar: 'bg-red-500', border: 'border-red-500/40' },
-}
-function severityMeta(cls: string) {
-  return SEVERITY_META[cls] || { label: cls, text: 'text-slate-400', bar: 'bg-slate-500', border: 'border-slate-500/40' }
+// The single model's 5 buckets, low → high, with a spectrum colour each.
+const DOSE_ORDER = ['under_severe', 'under_watch', 'on_target', 'over_watch', 'over_severe'] as const
+const DOSE_META: Record<string, { label: string; bar: string; text: string }> = {
+  under_severe: { label: 'Severe under', bar: 'bg-red-500', text: 'text-red-400' },
+  under_watch: { label: 'Slight under', bar: 'bg-amber-500', text: 'text-amber-400' },
+  on_target: { label: 'On target', bar: 'bg-emerald-500', text: 'text-emerald-400' },
+  over_watch: { label: 'Slight over', bar: 'bg-amber-500', text: 'text-amber-400' },
+  over_severe: { label: 'Severe over', bar: 'bg-red-500', text: 'text-red-400' },
 }
 
 const SUGGESTED = [
@@ -270,7 +299,9 @@ const STAT_COLORS: Record<string, { text: string; dot: string; chip: string; glo
   red: { text: 'text-red-400', dot: 'bg-red-400', chip: 'from-red-500 to-red-600', glow: 'from-red-500/20 via-transparent to-red-500/20' },
 }
 
-/** KPI stat card — identical to the Fakieh Dashboard's KPI cards. */
+/** KPI stat card — identical to the Fakieh Dashboard's KPI cards. When
+ *  `onClick` is given, the whole card becomes a button (cursor, ring-on-hover,
+ *  a "Tap to view" hint) so it's obvious there's a list behind the number. */
 function StatCard({
   label,
   value,
@@ -278,6 +309,7 @@ function StatCard({
   icon,
   color,
   pulse = true,
+  onClick,
 }: {
   label: string
   value: string
@@ -285,10 +317,19 @@ function StatCard({
   icon: React.ReactNode
   color: keyof typeof STAT_COLORS
   pulse?: boolean
+  onClick?: () => void
 }) {
   const c = STAT_COLORS[color]
   return (
-    <div className="bg-slate-800/50 light:bg-white border border-slate-700/50 light:border-gray-200 rounded-lg p-6 shadow-lg light:shadow-xl relative overflow-hidden group hover:shadow-2xl transition-all duration-300">
+    <div
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => (e.key === 'Enter' || e.key === ' ') && onClick() : undefined}
+      className={`bg-slate-800/50 light:bg-white border border-slate-700/50 light:border-gray-200 rounded-lg p-6 shadow-lg light:shadow-xl relative overflow-hidden group hover:shadow-2xl transition-all duration-300 ${
+        onClick ? 'cursor-pointer hover:border-cyan-500/50 focus:outline-none focus:ring-2 focus:ring-cyan-500/50' : ''
+      }`}
+    >
       <div className={`absolute inset-0 bg-gradient-to-r ${c.glow} opacity-0 group-hover:opacity-100 transition-opacity duration-300`}></div>
       <div className="relative z-10">
         <div className="flex items-center justify-between">
@@ -306,33 +347,30 @@ function StatCard({
             {icon}
           </div>
         </div>
+        {onClick && (
+          <p className="mt-3 flex items-center gap-1 text-[11px] font-medium text-slate-500 light:text-gray-400 opacity-0 transition-opacity group-hover:opacity-100">
+            <ChevronRight className="h-3 w-3" /> Tap to view the list
+          </p>
+        )}
       </div>
     </div>
   )
 }
 
-/** Compact secondary metric tile (for dense model rows). */
-function MiniStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-slate-700/50 light:border-gray-200 bg-slate-900/40 light:bg-gray-50 p-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-400 light:text-gray-500">{label}</div>
-      <div className="mt-1 text-2xl font-bold text-white light:text-gray-900">{value}</div>
-    </div>
-  )
-}
-
 // ---- Live-monitor building blocks ------------------------------------------
+// Plain-language status labels — no ML/statistics terms. Operators see a
+// color and a short phrase; the numbers behind it live in a hidden details panel.
 const DRIFT_META: Record<string, { label: string; text: string; dot: string; ring: string }> = {
-  warming: { label: 'Warming up', text: 'text-slate-300 light:text-gray-600', dot: 'bg-slate-400', ring: 'border-slate-600/50 light:border-gray-300' },
-  healthy: { label: 'In distribution', text: 'text-emerald-400', dot: 'bg-emerald-400', ring: 'border-emerald-500/40' },
-  watch: { label: 'Watch', text: 'text-amber-400', dot: 'bg-amber-400', ring: 'border-amber-500/40' },
-  drift: { label: 'Drift detected', text: 'text-red-400', dot: 'bg-red-400', ring: 'border-red-500/40' },
+  warming: { label: 'Starting…', text: 'text-slate-300 light:text-gray-600', dot: 'bg-slate-400', ring: 'border-slate-600/50 light:border-gray-300' },
+  healthy: { label: 'All Good', text: 'text-emerald-400', dot: 'bg-emerald-400', ring: 'border-emerald-500/40' },
+  watch: { label: 'Something New', text: 'text-amber-400', dot: 'bg-amber-400', ring: 'border-amber-500/40' },
+  drift: { label: 'Updating…', text: 'text-red-400', dot: 'bg-red-400', ring: 'border-red-500/40' },
 }
 
 function outcomeTag(f: LiveFeedItem): { t: string; c: string } {
-  if (f.actual_status === 'on_target') return { t: 'on target', c: 'text-emerald-400' }
-  if (f.actual_status === 'over') return { t: `over +${f.actual_pct}%`, c: 'text-red-400' }
-  if (f.actual_status === 'under') return { t: `under ${f.actual_pct}%`, c: 'text-red-400' }
+  if (f.actual_status === 'on_target') return { t: 'On target', c: 'text-emerald-400' }
+  if (f.actual_status === 'over') return { t: `${f.actual_pct}% over`, c: 'text-red-400' }
+  if (f.actual_status === 'under') return { t: `${Math.abs(f.actual_pct ?? 0)}% under`, c: 'text-red-400' }
   return { t: '—', c: 'text-slate-500' }
 }
 
@@ -361,24 +399,259 @@ function FeedRow({ f }: { f: LiveFeedItem }) {
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <span className={`rounded-full border px-2 py-0.5 text-xs ${bandColor(f.band)}`}>{f.risk_pct}%</span>
-          <div className={`mt-0.5 text-[10px] uppercase tracking-wide ${out.c}`}>{out.t}</div>
+          <div className="text-[9px] uppercase tracking-wide text-slate-500 light:text-gray-400">AI predicted</div>
+          <span className={`rounded-full border px-2 py-0.5 text-xs ${bandColor(f.band)}`}>{f.risk_pct}% risk</span>
+          {f.direction && (
+            <div className="mt-1 flex items-center justify-end gap-1 text-[10px] font-medium text-slate-400 light:text-gray-500">
+              {f.direction === 'over' ? (
+                <TrendingUp className="h-3 w-3 text-amber-400" />
+              ) : (
+                <TrendingDown className="h-3 w-3 text-cyan-400" />
+              )}
+              {f.direction === 'over' ? 'Likely high' : 'Likely low'}
+            </div>
+          )}
+          <div className="mt-1 text-[9px] uppercase tracking-wide text-slate-500 light:text-gray-400">Actual result</div>
+          <div className={`text-[11px] font-medium ${out.c}`}>{out.t}</div>
         </div>
       </div>
-      {f.flagged && (
+      {f.flagged && f.recommendation && (
         <div className="mt-2 flex items-start gap-2 border-t border-slate-700/40 light:border-gray-200 pt-2 text-xs text-slate-300 light:text-gray-600">
           <AlertTriangle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${f.band === 'High' ? 'text-red-400' : 'text-amber-400'}`} />
-          <span>
-            {f.recommendation}
-            {f.severity_label && (
-              <>
-                {' '}· <span className={severityMeta(f.severity || '').text}>Severity: {f.severity_label}</span>
-              </>
-            )}
-          </span>
+          <span>{f.recommendation}</span>
         </div>
       )}
     </div>
+  )
+}
+
+/** Ranked list of the ingredients most often off-target — directly actionable
+ *  (which feeder to check), unlike a per-recipe accuracy chart. */
+function MaterialWatchlist({ materials }: { materials: MaterialAccuracy[] }) {
+  return (
+    <div className="space-y-2.5">
+      {materials.map((m) => {
+        const severe = m.mean_abs_dev_pct >= 50
+        const barColor = severe ? 'bg-red-500' : 'bg-amber-500'
+        const textColor = severe ? 'text-red-400' : 'text-amber-400'
+        const direction = m.mean_dev_pct > 0 ? 'usually over target' : m.mean_dev_pct < 0 ? 'usually under target' : 'mixed'
+        return (
+          <div
+            key={m.material_name}
+            className="rounded-lg border border-slate-700/50 light:border-gray-200 bg-slate-900/40 light:bg-gray-50 p-3"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-sm text-slate-200 light:text-gray-800">{m.material_name}</span>
+              <span className={`shrink-0 text-sm font-bold ${textColor}`}>
+                {Math.round(m.mean_abs_dev_pct)}% off
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800 light:bg-gray-200">
+              <div
+                className={`h-full ${barColor}`}
+                style={{ width: `${Math.min(100, m.mean_abs_dev_pct)}%` }}
+              ></div>
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500 light:text-gray-500">{direction}</div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Strip of small colored blocks — one per recent batch, colored by the real
+ *  outcome (not the AI's prediction). Plain divs, not a chart: nothing to
+ *  rescale or rotate, so it never "jumps" as new batches arrive live. */
+function OutcomeStrip({ items }: { items: LiveFeedItem[] }) {
+  function color(f: LiveFeedItem) {
+    if (f.actual_status === 'on_target') return 'bg-emerald-500'
+    if (f.actual_status === 'over') return 'bg-amber-500'
+    if (f.actual_status === 'under') return 'bg-red-500'
+    return 'bg-slate-600'
+  }
+  function label(f: LiveFeedItem) {
+    if (f.actual_status === 'on_target') return 'On target'
+    if (f.actual_status === 'over') return `${f.actual_pct}% over`
+    if (f.actual_status === 'under') return `${Math.abs(f.actual_pct ?? 0)}% under`
+    return 'Unknown'
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((f) => (
+        <div
+          key={f.id}
+          title={`${f.material_name} · ${label(f)}`}
+          className={`h-7 w-3.5 rounded-sm ${color(f)} transition-opacity`}
+        ></div>
+      ))}
+    </div>
+  )
+}
+
+/** Renders a written AI answer operator-simple: a big leading number (when the
+ *  answer has one) or a short bold headline, with the full explanation
+ *  collapsed behind a "Show details" toggle instead of a wall of text. */
+function AnswerCard({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean)
+  const headline = (sentences[0] || text).trim()
+  const rest = sentences.slice(1).join(' ').trim()
+
+  // Pull a number out to headline big ONLY when it sits at the start or end
+  // of the sentence (that's what makes it "the" stat, not just a stray
+  // figure). Critically: the caption always stays the FULL, UNMODIFIED
+  // sentence — never a stripped remainder. Removing the number from the text
+  // (an earlier version of this component did that) breaks grammar whenever
+  // the number is the object of a trailing word, e.g. "...deviation of 28%"
+  // becomes "...deviation of" with nothing after it. Showing the number twice
+  // (once big, once in context) is a trivial redundancy; a dangling sentence
+  // fragment in front of an audience is not.
+  const leadMatch = headline.match(/^-?\d{1,3}(?:\.\d+)?\s?%\b/)
+  const trailMatch = headline.match(/-?\d{1,3}(?:\.\d+)?\s?%[.\s]*$/)
+  const statText = leadMatch
+    ? leadMatch[0].trim()
+    : trailMatch
+      ? trailMatch[0].replace(/[.\s]+$/, '').trim()
+      : null
+
+  return (
+    <div>
+      {statText && (
+        <div className="mb-1 text-3xl font-bold text-cyan-300">{statText}</div>
+      )}
+      <p className="text-base font-semibold leading-snug text-white light:text-gray-900">{headline}</p>
+      {rest && (
+        <>
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="mt-2 flex items-center gap-1 text-xs text-cyan-400 light:text-cyan-600 hover:underline"
+          >
+            {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {open ? 'Hide details' : 'Show details'}
+          </button>
+          {open && (
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-300 light:text-gray-600">
+              {rest}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function doseStatusTag(status: string): { t: string; c: string; dot: string } {
+  if (status === 'on_target') return { t: 'On target', c: 'text-emerald-400', dot: 'bg-emerald-500' }
+  if (status === 'over') return { t: 'Over', c: 'text-amber-400', dot: 'bg-amber-500' }
+  if (status === 'under') return { t: 'Under', c: 'text-red-400', dot: 'bg-red-500' }
+  return { t: status, c: 'text-slate-400', dot: 'bg-slate-500' }
+}
+
+function DoseRowView({ d }: { d: DoseRow }) {
+  const tag = doseStatusTag(d.status)
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-700/50 light:border-gray-200 bg-slate-900/40 light:bg-gray-50 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${tag.dot}`}></span>
+        <div className="min-w-0">
+          <div className="truncate text-sm text-slate-200 light:text-gray-800">
+            {d.material_name} <span className="text-slate-500 light:text-gray-400">· {d.setpoint} kg</span>
+          </div>
+          <div className="truncate text-xs text-slate-500 light:text-gray-500">
+            {d.product_name} · batch {d.batch_name}
+          </div>
+        </div>
+      </div>
+      <div className="shrink-0 text-right">
+        <span className={`text-xs font-medium ${tag.c}`}>{tag.t}</span>
+        {d.deviation_pct != null && (
+          <div className="text-[11px] text-slate-500 light:text-gray-400">
+            {d.deviation_pct > 0 ? '+' : ''}
+            {d.deviation_pct}%
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Tab 1 popup — fetches the individual historical doses behind a KPI card
+ *  (e.g. all 196 "Over-dosed" rows) so a number is never a dead end. */
+function DoseListDialog({ status, title, onClose }: { status: string; title: string; onClose: () => void }) {
+  const [rows, setRows] = useState<DoseRow[] | null>(null)
+  const [total, setTotal] = useState(0)
+
+  useEffect(() => {
+    setRows(null)
+    axios
+      .get(`${AI}/doses`, { params: { status, limit: 150 } })
+      .then((r) => {
+        setRows(r.data.doses)
+        setTotal(r.data.total)
+      })
+      .catch(() => setRows([]))
+  }, [status])
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl border-slate-700/50 light:border-gray-200 bg-slate-900 light:bg-white">
+        <DialogHeader>
+          <DialogTitle className="text-white light:text-gray-900">{title}</DialogTitle>
+        </DialogHeader>
+        {rows === null ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-slate-400 light:text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : rows.length === 0 ? (
+          <p className="py-10 text-center text-sm text-slate-500 light:text-gray-400">No doses in this category.</p>
+        ) : (
+          <>
+            {total > rows.length && (
+              <p className="text-xs text-slate-500 light:text-gray-400">
+                Showing the most recent {rows.length} of {total}.
+              </p>
+            )}
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+              {rows.map((d, i) => (
+                <DoseRowView key={i} d={d} />
+              ))}
+            </div>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Tab 2 popup — the live batches behind a KPI card, reusing the same
+ *  FeedRow already used in the main feed so the two views read identically. */
+function FeedListDialog({
+  items,
+  title,
+  onClose,
+}: {
+  items: LiveFeedItem[]
+  title: string
+  onClose: () => void
+}) {
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl border-slate-700/50 light:border-gray-200 bg-slate-900 light:bg-white">
+        <DialogHeader>
+          <DialogTitle className="text-white light:text-gray-900">{title}</DialogTitle>
+        </DialogHeader>
+        {items.length === 0 ? (
+          <p className="py-10 text-center text-sm text-slate-500 light:text-gray-400">Nothing in this category yet.</p>
+        ) : (
+          <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+            {items.map((f) => (
+              <FeedRow key={f.id} f={f} />
+            ))}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -393,17 +666,21 @@ export function AiAssistant() {
   const [asking, setAsking] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  const [mlInfo, setMlInfo] = useState<MLInfo | null>(null)
+  const [doseInfo, setDoseInfo] = useState<DoseInfo | null>(null)
   const [material, setMaterial] = useState('')
   const [product, setProduct] = useState('')
   const [setpoint, setSetpoint] = useState('0.9')
-  const [prediction, setPrediction] = useState<Prediction | null>(null)
+  const [dosePrediction, setDosePrediction] = useState<DosePrediction | null>(null)
   const [predicting, setPredicting] = useState(false)
-  const [severityPrediction, setSeverityPrediction] = useState<SeverityPrediction | null>(null)
+
+  // KPI-card drilldown popups
+  const [tab1DoseModal, setTab1DoseModal] = useState<{ status: string; title: string } | null>(null)
+  const [tab2FeedModal, setTab2FeedModal] = useState<{ items: LiveFeedItem[]; title: string } | null>(null)
   const [whatIfOpen, setWhatIfOpen] = useState(false)
 
   // Live monitor
   const [live, setLive] = useState<LiveState | null>(null)
+  const [feedFilter, setFeedFilter] = useState<'all' | 'flagged' | 'ok'>('all')
   const [toasts, setToasts] = useState<LiveNotif[]>([])
   const seenNotif = useRef<Set<string>>(new Set())
   const firstLoad = useRef(true)
@@ -420,9 +697,9 @@ export function AiAssistant() {
       .finally(() => setInsightsLoading(false))
 
     axios
-      .get<MLInfo>(`${AI}/ml/info`)
+      .get<DoseInfo>(`${AI}/ml/dose/info`)
       .then((r) => {
-        setMlInfo(r.data)
+        setDoseInfo(r.data)
         const cu = r.data.options.materials.find((m) =>
           m.material_name.toLowerCase().includes('copper proteinate')
         )
@@ -449,9 +726,13 @@ export function AiAssistant() {
           if (fresh.length) {
             fresh.forEach((n) => seenNotif.current.add(n.id))
             setToasts((t) => [...fresh, ...t].slice(0, 4))
-            fresh.forEach((n) =>
-              setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 9000)
-            )
+            // Maintenance alerts stay until dismissed by hand — too important to
+            // let disappear on a timer. Drift/retrain updates auto-clear.
+            fresh
+              .filter((n) => n.kind !== 'maintenance')
+              .forEach((n) =>
+                setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 9000)
+              )
           }
         }
       } catch {
@@ -473,11 +754,14 @@ export function AiAssistant() {
   async function handleAsk(q?: string) {
     const text = (q ?? question).trim()
     if (!text || asking) return
+    // Recent turns so the backend can resolve follow-ups ("make it as a
+    // graph") that refer back to what was just asked.
+    const history = messages.slice(-6).map((m) => ({ role: m.role, text: m.text }))
     setMessages((m) => [...m, { role: 'user', text }])
     setQuestion('')
     setAsking(true)
     try {
-      const { data } = await axios.post(`${AI}/ask`, { question: text })
+      const { data } = await axios.post(`${AI}/ask`, { question: text, history })
       setMessages((m) => [
         ...m,
         {
@@ -499,19 +783,19 @@ export function AiAssistant() {
   }
 
   async function handlePredict() {
-    if (!material || !product || predicting) return
+    if (!material || predicting) return
     setPredicting(true)
-    const payload = {
-      material_code: material,
-      product_name: product,
-      setpoint: parseFloat(setpoint) || 0,
+    // ONE call to the single dose-quality model → risk + severity + direction.
+    try {
+      const { data } = await axios.post<DosePrediction>(`${AI}/ml/dose/predict`, {
+        material_code: material,
+        product_name: product,
+        setpoint: parseFloat(setpoint) || 0,
+      })
+      setDosePrediction(data)
+    } catch {
+      setDosePrediction(null)
     }
-    const [riskResult, severityResult] = await Promise.allSettled([
-      axios.post(`${AI}/ml/predict`, payload),
-      axios.post(`${AI}/ml/severity/predict`, payload),
-    ])
-    setPrediction(riskResult.status === 'fulfilled' ? riskResult.value.data : null)
-    setSeverityPrediction(severityResult.status === 'fulfilled' ? severityResult.value.data : null)
     setPredicting(false)
   }
 
@@ -543,53 +827,27 @@ export function AiAssistant() {
       }
     : null
 
-  const worstProducts = (insights?.insights.product_summary || []).slice(0, 8)
-  const productData = worstProducts.length
-    ? {
-        labels: worstProducts.map((p) => p.product_name),
-        datasets: [
-          {
-            label: 'Accuracy %',
-            data: worstProducts.map((p) => p.accuracy_score),
-            backgroundColor: 'rgba(34, 211, 238, 0.45)',
-            borderColor: ACCENT,
-            borderWidth: 2,
-          },
-        ],
-      }
-    : null
+  const worstMaterials = insights?.insights.worst_materials || []
 
   const liveProvider = health?.providers.find((p) => p.configured)
 
   // ---- Derived data (Tab 2 — live monitor) ---------------------------------
   const st = live?.stats
   const dr = live?.drift
-  const md = live?.model
   const driftMeta = DRIFT_META[dr?.status || 'warming']
   const onTargetRate = st && st.processed ? Math.round((st.on_target / st.processed) * 100) : 0
 
-  // Rolling risk trend across the most recent batches (oldest -> newest).
-  const recent = live ? [...live.feed].slice(0, 18).reverse() : []
-  const riskTrend = recent.length
-    ? {
-        labels: recent.map((f) => `#${f.seq}`),
-        datasets: [
-          {
-            label: 'Risk %',
-            data: recent.map((f) => f.risk_pct),
-            backgroundColor: recent.map((f) =>
-              f.band === 'High'
-                ? 'rgba(239,68,68,0.7)'
-                : f.band === 'Medium'
-                  ? 'rgba(245,158,11,0.7)'
-                  : 'rgba(34,211,238,0.5)'
-            ),
-            borderColor: ACCENT,
-            borderWidth: 1,
-          },
-        ],
-      }
-    : null
+  // Recent batches, oldest -> newest, for the outcome strip.
+  const recentOutcomes = live ? [...live.feed].slice(0, 30).reverse() : []
+
+  const feedAll = live?.feed ?? []
+  const feedFlaggedCount = feedAll.filter((f) => f.flagged).length
+  const feedOkCount = feedAll.length - feedFlaggedCount
+  const filteredFeed = feedAll.filter((f) =>
+    feedFilter === 'all' ? true : feedFilter === 'flagged' ? f.flagged : !f.flagged
+  )
+  const streamPct = live && live.total ? Math.round((live.cursor / live.total) * 100) : 0
+  const flaggedPct = st && st.processed ? Math.round((st.flagged / st.processed) * 100) : 0
 
   const outcomeMix = st
     ? {
@@ -623,14 +881,30 @@ export function AiAssistant() {
             key={n.id}
             className={
               'pointer-events-auto animate-in fade-in slide-in-from-right-4 duration-300 rounded-lg border p-4 shadow-2xl backdrop-blur ' +
-              (n.kind === 'drift'
-                ? 'border-amber-500/50 bg-amber-950/85 light:bg-amber-50 light:border-amber-300'
-                : 'border-cyan-500/50 bg-cyan-950/85 light:bg-cyan-50 light:border-cyan-300')
+              (n.kind === 'maintenance'
+                ? 'border-red-500/60 bg-red-950/90 light:bg-red-50 light:border-red-400'
+                : n.kind === 'drift'
+                  ? 'border-amber-500/50 bg-amber-950/85 light:bg-amber-50 light:border-amber-300'
+                  : 'border-cyan-500/50 bg-cyan-950/85 light:bg-cyan-50 light:border-cyan-300')
             }
           >
             <div className="flex items-start gap-3">
-              <span className={n.kind === 'drift' ? 'text-amber-400' : 'text-cyan-400 light:text-cyan-600'}>
-                {n.kind === 'drift' ? <AlertTriangle className="h-5 w-5" /> : <RefreshCw className="h-5 w-5" />}
+              <span
+                className={
+                  n.kind === 'maintenance'
+                    ? 'text-red-400'
+                    : n.kind === 'drift'
+                      ? 'text-amber-400'
+                      : 'text-cyan-400 light:text-cyan-600'
+                }
+              >
+                {n.kind === 'maintenance' ? (
+                  <Wrench className="h-5 w-5" />
+                ) : n.kind === 'drift' ? (
+                  <AlertTriangle className="h-5 w-5" />
+                ) : (
+                  <RefreshCw className="h-5 w-5" />
+                )}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-white light:text-gray-900">{n.title}</div>
@@ -656,7 +930,7 @@ export function AiAssistant() {
                 liveProvider ? 'animate-pulse bg-green-400' : 'bg-slate-500'
               }`}
             ></span>
-            {liveProvider ? `AI live · ${liveProvider.provider} (${liveProvider.model})` : 'AI offline · cached answers'}
+            {liveProvider ? 'AI Assistant Online' : 'AI Assistant Offline'}
           </span>
           <span className="flex items-center text-slate-300 light:text-gray-700">
             <span
@@ -664,7 +938,7 @@ export function AiAssistant() {
                 health?.ml_model_ready ? 'animate-pulse bg-green-400' : 'bg-red-400'
               }`}
             ></span>
-            ML models {health?.ml_model_ready ? 'ready' : 'not trained'}
+            {health?.ml_model_ready ? 'AI Ready' : 'AI Not Ready'}
           </span>
           {insights && (
             <span className="text-slate-400 light:text-gray-500">
@@ -688,10 +962,38 @@ export function AiAssistant() {
           <TabsContent value="assistant" className="space-y-6">
             {overall && (
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard label="Accuracy score" value={`${overall.accuracy_score}%`} subtitle="overall dosing accuracy" icon={<Target className="h-6 w-6 text-white" />} color="blue" />
-                <StatCard label="On target" value={`${overall.on_target_pct}%`} subtitle={`${overall.on_target} doses`} icon={<CheckCircle2 className="h-6 w-6 text-white" />} color="green" />
-                <StatCard label="Over-dosed" value={`${overall.over}`} subtitle="doses above tolerance" icon={<TrendingUp className="h-6 w-6 text-white" />} color="orange" />
-                <StatCard label="Flagged doses" value={`${overall.flagged}`} subtitle="need review" icon={<AlertTriangle className="h-6 w-6 text-white" />} color="red" />
+                <StatCard
+                  label="Accuracy score"
+                  value={`${overall.accuracy_score}%`}
+                  subtitle="overall dosing accuracy"
+                  icon={<Target className="h-6 w-6 text-white" />}
+                  color="blue"
+                  onClick={() => setTab1DoseModal({ status: 'all', title: `All Doses (${overall.count})` })}
+                />
+                <StatCard
+                  label="On target"
+                  value={`${overall.on_target_pct}%`}
+                  subtitle={`${overall.on_target} doses`}
+                  icon={<CheckCircle2 className="h-6 w-6 text-white" />}
+                  color="green"
+                  onClick={() => setTab1DoseModal({ status: 'on_target', title: `On-Target Doses (${overall.on_target})` })}
+                />
+                <StatCard
+                  label="Over-dosed"
+                  value={`${overall.over}`}
+                  subtitle={`${overall.over_pct}% of all doses`}
+                  icon={<TrendingUp className="h-6 w-6 text-white" />}
+                  color="orange"
+                  onClick={() => setTab1DoseModal({ status: 'over', title: `Over-Dosed (${overall.over})` })}
+                />
+                <StatCard
+                  label="Flagged doses"
+                  value={`${overall.flagged}`}
+                  subtitle={`${Math.round((overall.flagged / overall.count) * 100)}% need review`}
+                  icon={<AlertTriangle className="h-6 w-6 text-white" />}
+                  color="red"
+                  onClick={() => setTab1DoseModal({ status: 'flagged', title: `Flagged Doses (${overall.flagged})` })}
+                />
               </div>
             )}
 
@@ -702,19 +1004,18 @@ export function AiAssistant() {
                 </div>
               ) : (
                 <>
-                  <p className="leading-relaxed text-slate-200 light:text-gray-700">{insights?.summary}</p>
-                  {insights?.provider && (
-                    <p className="mt-3 text-[10px] uppercase tracking-wide text-slate-500 light:text-gray-400">
-                      {insights.cached ? 'offline · cached' : `written by ${insights.provider}`}
-                    </p>
-                  )}
+                  {insights?.summary && <AnswerCard text={insights.summary} />}
                 </>
               )}
             </Panel>
 
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               {distData && <ChartComponent type="doughnut" data={distData} title="Dose outcomes" height={240} />}
-              {productData && <ChartComponent type="bar" data={productData} title="Accuracy by product (lowest 8)" height={240} />}
+              {worstMaterials.length > 0 && (
+                <Panel title="Ingredients to Watch" icon={<AlertTriangle className="h-5 w-5" />}>
+                  <MaterialWatchlist materials={worstMaterials} />
+                </Panel>
+              )}
             </div>
 
             <Panel title="Ask Hercules" icon={<Bot className="h-5 w-5" />}>
@@ -749,7 +1050,11 @@ export function AiAssistant() {
                             : 'border border-slate-700/50 light:border-gray-200 bg-slate-800 light:bg-white text-slate-100 light:text-gray-900')
                         }
                       >
-                        <p className="whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                        {m.role === 'ai' ? (
+                          <AnswerCard text={m.text} />
+                        ) : (
+                          <p className="whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                        )}
                         {m.chart && m.chart.labels?.length > 0 && (
                           <div className="mt-3 w-[min(520px,70vw)]">
                             <ChartComponent
@@ -758,15 +1063,6 @@ export function AiAssistant() {
                               title={m.chart.title || 'Chart'}
                               height={200}
                             />
-                          </div>
-                        )}
-                        {m.role === 'ai' && m.provider && (
-                          <div className="mt-1 text-[10px] uppercase tracking-wide text-slate-500 light:text-gray-400">
-                            {m.cached
-                              ? 'offline · cached'
-                              : m.provider === 'ml-model'
-                                ? 'via trained ML model (live prediction)'
-                                : `via ${m.provider}`}
                           </div>
                         )}
                       </div>
@@ -804,18 +1100,17 @@ export function AiAssistant() {
                 <span className="flex items-center gap-2 text-slate-300 light:text-gray-700">
                   <Radio className={`h-4 w-4 ${live?.running ? 'text-green-400' : 'text-slate-500'}`} />
                   <span className={`h-2 w-2 rounded-full ${live?.running ? 'animate-pulse bg-green-400' : 'bg-slate-500'}`}></span>
-                  {live?.running ? 'Live · scoring every batch' : 'Paused'}
+                  <span className="font-semibold">{live?.running ? 'LIVE' : 'PAUSED'}</span>
                 </span>
-                <span className="hidden text-slate-500 light:text-gray-400 sm:inline">{live?.source}</span>
-                <span className={`flex items-center gap-2 rounded-full border px-2.5 py-0.5 text-xs ${driftMeta.ring} ${driftMeta.text}`}>
+                <span className={`flex items-center gap-2 rounded-full border px-2.5 py-0.5 text-xs font-medium ${driftMeta.ring} ${driftMeta.text}`}>
                   <span className={`h-2 w-2 rounded-full ${driftMeta.dot} ${dr?.status === 'drift' ? 'animate-pulse' : ''}`}></span>
-                  {live?.retraining ? 'Retraining…' : driftMeta.label}
-                </span>
-                <span className="flex items-center gap-1.5 text-xs text-slate-400 light:text-gray-500">
-                  <ShieldCheck className="h-3.5 w-3.5 text-cyan-400 light:text-cyan-600" /> Model v{md?.version ?? 1}
+                  {live?.retraining ? 'Updating…' : driftMeta.label}
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <span className="mr-1 hidden text-[10px] uppercase tracking-wide text-slate-500 light:text-gray-400 sm:inline">
+                  Demo speed
+                </span>
                 <div className="mr-1 flex items-center overflow-hidden rounded-md border border-slate-700 light:border-gray-300">
                   {speedPresets.map((s) => (
                     <button
@@ -841,122 +1136,113 @@ export function AiAssistant() {
             </div>
 
             {/* Live KPI row */}
-            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
               <StatCard
                 label="Batches monitored"
                 value={`${st?.processed ?? 0}`}
-                subtitle={live ? `${live.cursor} of ${live.total} streamed` : 'starting…'}
+                subtitle={live ? `${streamPct}% of ${live.total} total` : 'starting…'}
                 icon={<Activity className="h-6 w-6 text-white" />}
                 color="blue"
+                onClick={() => setTab2FeedModal({ items: feedAll, title: `Batches Monitored (${feedAll.length})` })}
               />
               <StatCard
-                label="Flagged for review"
+                label="Needs Attention"
                 value={`${st?.flagged ?? 0}`}
-                subtitle="risky doses caught pre-batch"
+                subtitle={`${flaggedPct}% of monitored so far`}
                 icon={<AlertTriangle className="h-6 w-6 text-white" />}
                 color="red"
+                onClick={() =>
+                  setTab2FeedModal({ items: feedAll.filter((f) => f.flagged), title: `Needs Attention (${feedFlaggedCount})` })
+                }
               />
               <StatCard
-                label="On-target rate"
+                label="On Target"
                 value={`${onTargetRate}%`}
-                subtitle="live production quality"
+                subtitle={`${st?.on_target ?? 0} of ${st?.processed ?? 0} doses`}
                 icon={<CheckCircle2 className="h-6 w-6 text-white" />}
                 color="green"
-              />
-              <StatCard
-                label="Model accuracy (live)"
-                value={st?.rolling_accuracy != null ? `${st.rolling_accuracy}%` : '—'}
-                subtitle="predictions vs actual outcome"
-                icon={<Gauge className="h-6 w-6 text-white" />}
-                color="cyan"
-              />
-            </div>
-
-            {/* Feed + model/drift health */}
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <Panel
-                title="Live operator feed"
-                icon={<Radio className="h-5 w-5" />}
-                className="lg:col-span-2"
-                right={
-                  <span className="flex items-center gap-1.5 text-xs text-slate-400 light:text-gray-500">
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-green-400"></span> streaming
-                  </span>
+                onClick={() =>
+                  setTab2FeedModal({ items: feedAll.filter((f) => !f.flagged), title: `On Target (${feedOkCount})` })
                 }
-              >
-                <p className="mb-3 text-xs leading-relaxed text-slate-400 light:text-gray-500">
-                  Every batch is scored the moment it arrives from the plant — <b>before it runs</b>. Risky
-                  doses are flagged with the recommended action so the operator can act in time. No manual entry.
-                </p>
-                <div className="max-h-[460px] space-y-2 overflow-y-auto pr-1">
-                  {(!live || live.feed.length === 0) && (
-                    <div className="flex items-center gap-2 py-6 text-sm text-slate-500 light:text-gray-400">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Waiting for the first batch…
-                    </div>
-                  )}
-                  {live?.feed.map((f) => (
-                    <FeedRow key={f.id} f={f} />
-                  ))}
-                </div>
-              </Panel>
-
-              <Panel title="Model &amp; drift health" icon={<ShieldCheck className="h-5 w-5" />}>
-                <div className="space-y-4">
-                  <div>
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="uppercase tracking-wide text-slate-400 light:text-gray-500">
-                        Out-of-distribution rate
-                      </span>
-                      <span className={driftMeta.text}>{dr?.novel_rate != null ? `${dr.novel_rate}%` : '—'}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-slate-800 light:bg-gray-200">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          dr?.status === 'drift' ? 'bg-red-500' : dr?.status === 'watch' ? 'bg-amber-500' : 'bg-emerald-500'
-                        }`}
-                        style={{ width: `${Math.min(dr?.novel_rate ?? 0, 100)}%` }}
-                      ></div>
-                    </div>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500 light:text-gray-500">
-                      Share of recent batches whose product recipe the model was barely trained on. Above 25%
-                      triggers an automatic retrain.
-                    </p>
-                  </div>
-
-                  {dr?.new_recipes && dr.new_recipes.length > 0 && (
-                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 light:bg-amber-50 p-2.5">
-                      <div className="text-[11px] uppercase tracking-wide text-amber-400">New recipes in feed</div>
-                      <div className="mt-1 text-xs text-slate-300 light:text-gray-700">
-                        {dr.new_recipes.slice(0, 4).join(', ')}
-                        {dr.new_recipes.length > 4 ? '…' : ''}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <MiniStat label="Model version" value={`v${md?.version ?? 1}`} />
-                    <MiniStat label="Trained on" value={`${md?.trained_on ?? 0}`} />
-                    <MiniStat
-                      label="Model accuracy"
-                      value={md?.accuracy != null ? `${(md.accuracy * 100).toFixed(0)}%` : '—'}
-                    />
-                    <MiniStat label="Setpoint PSI" value={dr?.setpoint_psi != null ? `${dr.setpoint_psi}` : '—'} />
-                  </div>
-
-                  <div className="rounded-lg border border-slate-700/50 light:border-gray-200 bg-slate-900/40 light:bg-gray-50 p-3 text-[11px] leading-relaxed text-slate-400 light:text-gray-600">
-                    The monitor watches the incoming batch mix against the model's training data. When the plant
-                    switches to recipes the model hasn't seen, it retrains itself on the latest data and hot-swaps
-                    the new model in — <b>with zero downtime</b>. The operator only sees a confirmation popup.
-                  </div>
-                </div>
-              </Panel>
+              />
             </div>
+
+            {/* Live operator feed */}
+            <Panel
+              title="Live operator feed"
+              icon={<Radio className="h-5 w-5" />}
+              right={
+                <span className="flex items-center gap-1.5 text-xs text-slate-400 light:text-gray-500">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-green-400"></span> streaming
+                </span>
+              }
+            >
+              <p className="mb-3 text-xs leading-relaxed text-slate-400 light:text-gray-500">
+                Every batch is checked <b>before it runs</b>. Flagged ones need a quick look.
+              </p>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                {(
+                  [
+                    ['all', `All (${feedAll.length})`],
+                    ['flagged', `Needs Attention (${feedFlaggedCount})`],
+                    ['ok', `On Target (${feedOkCount})`],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setFeedFilter(key)}
+                    className={`rounded-full border px-3 py-1 text-xs transition ${
+                      feedFilter === key
+                        ? 'border-cyan-500 bg-cyan-600/20 text-cyan-300'
+                        : 'border-slate-600/50 light:border-gray-300 text-slate-400 light:text-gray-500 hover:text-slate-200 light:hover:text-gray-800'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="max-h-[460px] space-y-2 overflow-y-auto pr-1">
+                {(!live || live.feed.length === 0) && (
+                  <div className="flex items-center gap-2 py-6 text-sm text-slate-500 light:text-gray-400">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Waiting for the first batch…
+                  </div>
+                )}
+                {live && live.feed.length > 0 && filteredFeed.length === 0 && (
+                  <p className="py-6 text-center text-sm text-slate-500 light:text-gray-400">
+                    Nothing in this view yet.
+                  </p>
+                )}
+                {filteredFeed.map((f) => (
+                  <FeedRow key={f.id} f={f} />
+                ))}
+              </div>
+            </Panel>
 
             {/* Live charts */}
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {riskTrend && (
-                <ChartComponent type="bar" data={riskTrend} title="Predicted risk — most recent batches" height={240} />
-              )}
+              <Panel title="Recent Batches" icon={<Activity className="h-5 w-5" />}>
+                <p className="mb-3 text-xs leading-relaxed text-slate-400 light:text-gray-500">
+                  How the last {recentOutcomes.length || 0} doses actually turned out — oldest to newest.
+                </p>
+                {recentOutcomes.length > 0 ? (
+                  <>
+                    <OutcomeStrip items={recentOutcomes} />
+                    <div className="mt-4 flex items-center gap-4 text-[11px] text-slate-400 light:text-gray-500">
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500"></span> On target
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-sm bg-amber-500"></span> Over
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-sm bg-red-500"></span> Under
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-slate-500 light:text-gray-400">Waiting for the first batch…</p>
+                )}
+              </Panel>
               {outcomeMix && (
                 <ChartComponent type="doughnut" data={outcomeMix} title="Live dose outcomes (this session)" height={240} />
               )}
@@ -975,11 +1261,15 @@ export function AiAssistant() {
               {!whatIfOpen ? (
                 <p className="text-sm text-slate-400 light:text-gray-500">
                   Operators don't use this — the plant feed is scored automatically above. This is a manual
-                  sandbox for engineers/commissioning to test a hypothetical dose against both trained models.
+                  sandbox for engineers to test a hypothetical dose against the model.
                 </p>
               ) : (
                 <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                   <div className="space-y-4">
+                    <p className="text-xs leading-relaxed text-slate-400 light:text-gray-500">
+                      One model looks at just two things — the ingredient and the target weight — and sorts the
+                      dose into one of five buckets. Risk, severity and direction all come from that single call.
+                    </p>
                     <div className="space-y-2">
                       <label className="text-xs uppercase tracking-wide text-slate-400 light:text-gray-500">Ingredient</label>
                       <Select value={material} onValueChange={setMaterial}>
@@ -987,24 +1277,9 @@ export function AiAssistant() {
                           <SelectValue placeholder="Select ingredient" />
                         </SelectTrigger>
                         <SelectContent className={`max-h-72 ${FIELD}`}>
-                          {mlInfo?.options.materials.map((m) => (
+                          {doseInfo?.options.materials.map((m) => (
                             <SelectItem key={m.material_code} value={m.material_code}>
                               {m.material_name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-xs uppercase tracking-wide text-slate-400 light:text-gray-500">Product recipe</label>
-                      <Select value={product} onValueChange={setProduct}>
-                        <SelectTrigger className={FIELD}>
-                          <SelectValue placeholder="Select product" />
-                        </SelectTrigger>
-                        <SelectContent className={`max-h-72 ${FIELD}`}>
-                          {mlInfo?.options.products.map((p) => (
-                            <SelectItem key={p} value={p}>
-                              {p}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1015,53 +1290,74 @@ export function AiAssistant() {
                       <Input type="number" step="0.1" value={setpoint} onChange={(e) => setSetpoint(e.target.value)} className={FIELD} />
                     </div>
                     <Button onClick={handlePredict} disabled={predicting} className="w-full">
-                      {predicting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Predict dosing risk'}
+                      {predicting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Score this dose'}
                     </Button>
                   </div>
 
-                  <div className="space-y-4">
-                    {prediction && (
-                      <div className={`rounded-lg border p-4 text-center ${bandColor(prediction.band)}`}>
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-400 light:text-gray-500">Risk model</div>
-                        <div className="text-4xl font-bold">{prediction.risk_pct}%</div>
-                        <div className="mt-1 text-sm font-medium">
-                          {prediction.band} risk · {prediction.prediction}
-                        </div>
-                        <div className="mt-2 text-xs text-slate-400 light:text-gray-500">
-                          {prediction.inputs.material_name} · {prediction.inputs.setpoint} kg · {prediction.inputs.product_name}
-                        </div>
-                      </div>
-                    )}
-                    {severityPrediction && (
-                      <div className={`rounded-lg border p-4 ${severityMeta(severityPrediction.severity).border} bg-slate-900/40 light:bg-gray-50`}>
+                  <div>
+                    {dosePrediction ? (
+                      <div className="rounded-lg border border-slate-700/50 light:border-gray-200 bg-slate-900/40 light:bg-gray-50 p-4">
                         <div className="text-center">
-                          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 light:text-gray-500">Severity triage model</div>
-                          <div className={`text-2xl font-bold ${severityMeta(severityPrediction.severity).text}`}>
-                            {severityPrediction.severity_label}
+                          <div className="text-xs font-medium uppercase tracking-wide text-slate-400 light:text-gray-500">
+                            Dose Quality Model · one model, three answers
                           </div>
-                          <div className="mt-1 text-xs text-slate-400 light:text-gray-500">
-                            {severityPrediction.confidence_pct}% confidence
+                          <div className={`mt-1 inline-block rounded-lg border px-4 py-1 text-4xl font-bold ${bandColor(dosePrediction.band)}`}>
+                            {dosePrediction.risk_pct}%
+                          </div>
+                          <div className="mt-1 text-sm font-medium text-slate-200 light:text-gray-700">
+                            {dosePrediction.band} risk · {dosePrediction.prediction}
                           </div>
                         </div>
-                        <div className="mt-3 space-y-1.5">
-                          {Object.entries(severityPrediction.probabilities).map(([cls, pct]) => {
-                            const meta = severityMeta(cls)
-                            return (
-                              <div key={cls} className="flex items-center gap-2">
-                                <span className={`w-14 shrink-0 text-[11px] ${meta.text}`}>{meta.label}</span>
-                                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800 light:bg-gray-200">
-                                  <div className={`h-full ${meta.bar}`} style={{ width: `${pct}%` }} />
-                                </div>
-                                <span className="w-10 shrink-0 text-right text-[11px] text-slate-400 light:text-gray-500">{pct}%</span>
+
+                        {dosePrediction.flagged && (
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <div className="rounded-lg border border-slate-700/50 light:border-gray-200 p-2 text-center">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400 light:text-gray-500">How bad</div>
+                              <div className="text-sm font-semibold text-slate-100 light:text-gray-800">{dosePrediction.severity_label}</div>
+                              <div className="text-[10px] text-slate-500">{dosePrediction.severity_confidence_pct}%</div>
+                            </div>
+                            <div className="rounded-lg border border-slate-700/50 light:border-gray-200 p-2 text-center">
+                              <div className="text-[10px] uppercase tracking-wide text-slate-400 light:text-gray-500">Which way</div>
+                              <div className={`flex items-center justify-center gap-1 text-sm font-semibold ${dosePrediction.direction === 'over' ? 'text-amber-400' : 'text-cyan-400'}`}>
+                                {dosePrediction.direction === 'over' ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
+                                {dosePrediction.direction === 'over' ? 'Runs high' : 'Runs low'}
                               </div>
-                            )
-                          })}
+                              <div className="text-[10px] text-slate-500">{dosePrediction.direction_confidence_pct}%</div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-4">
+                          <div className="mb-1.5 text-[11px] uppercase tracking-wide text-slate-400 light:text-gray-500">
+                            The 5 buckets — how the AI sees this dose
+                          </div>
+                          <div className="space-y-1.5">
+                            {DOSE_ORDER.map((cls) => {
+                              const meta = DOSE_META[cls]
+                              const pct = dosePrediction.class_probabilities[cls] ?? 0
+                              const isTop = cls === dosePrediction.top_class
+                              return (
+                                <div key={cls} className="flex items-center gap-2">
+                                  <span className={`w-24 shrink-0 text-[11px] ${isTop ? meta.text + ' font-semibold' : 'text-slate-400 light:text-gray-500'}`}>
+                                    {meta.label}
+                                  </span>
+                                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-800 light:bg-gray-200">
+                                    <div className={`h-full ${meta.bar}`} style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="w-10 shrink-0 text-right text-[11px] text-slate-400 light:text-gray-500">{pct}%</span>
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
+                        <p className="mt-3 text-[11px] text-slate-500 light:text-gray-400">
+                          {dosePrediction.inputs.material_name} · {dosePrediction.inputs.setpoint} kg. Everything
+                          above is read from this single prediction, so the three answers can't contradict.
+                        </p>
                       </div>
-                    )}
-                    {!prediction && !severityPrediction && (
+                    ) : (
                       <p className="text-sm text-slate-500 light:text-gray-400">
-                        Pick an ingredient, recipe and target weight, then run both models.
+                        Pick an ingredient and target weight, then score the dose.
                       </p>
                     )}
                   </div>
@@ -1071,6 +1367,17 @@ export function AiAssistant() {
           </TabsContent>
         </Tabs>
       </div>
+
+      {tab1DoseModal && (
+        <DoseListDialog
+          status={tab1DoseModal.status}
+          title={tab1DoseModal.title}
+          onClose={() => setTab1DoseModal(null)}
+        />
+      )}
+      {tab2FeedModal && (
+        <FeedListDialog items={tab2FeedModal.items} title={tab2FeedModal.title} onClose={() => setTab2FeedModal(null)} />
+      )}
     </WaterSystemLayout>
   )
 }

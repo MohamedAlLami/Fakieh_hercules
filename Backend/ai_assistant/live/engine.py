@@ -42,7 +42,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OrdinalEncoder
 
-from ..ml import features, predictor_severity
+from .. import data
+from ..ml import dose_quality, features, predictor_dose
 from . import drift as driftmod
 from .sources import get_source
 
@@ -65,6 +66,15 @@ RARE_FLOOR = int(os.getenv("AI_LIVE_RARE_FLOOR", "3"))
 # Drift status thresholds on the out-of-distribution (novel-recipe) rate.
 NOVEL_DRIFT = float(os.getenv("AI_LIVE_NOVEL_DRIFT", "0.25"))  # >=25% of window -> drift
 NOVEL_WATCH = float(os.getenv("AI_LIVE_NOVEL_WATCH", "0.10"))  # >=10% -> watch
+
+# Below this rolling accuracy (predictions vs actual outcome), something is
+# wrong beyond what a retrain can fix (bad sensor, miscalibrated feeder,
+# corrupt feed) — 50% is "no better than a coin flip" for this binary
+# classifier, a defensible floor. Verified empirically against the full
+# demo replay: rolling accuracy never drops below 50.0 under normal
+# operation, so this never fires spuriously.
+MAINTENANCE_ACCURACY_FLOOR = float(os.getenv("AI_LIVE_MAINTENANCE_FLOOR", "50.0"))
+MAINTENANCE_RECOVER_BUFFER = 10.0  # hysteresis so the alert doesn't flicker
 
 
 def _now_iso() -> str:
@@ -107,6 +117,7 @@ class LiveEngine:
         self.speed = TICK
         self.retraining = False
         self._last_retrain = 0.0
+        self._maintenance_alerted = False
 
         self.feed: deque = deque(maxlen=FEED_MAX)      # scored batches (oldest->newest)
         self.window: deque = deque(maxlen=WINDOW)      # recent rows for PSI + accuracy
@@ -129,15 +140,17 @@ class LiveEngine:
                 "new_recipes": [], "checked_at": None}
 
     def _fit(self, rows: list[dict]) -> tuple[Pipeline, float | None]:
-        """Train the RandomForest pipeline on normalized rows; return (pipe, holdout_acc)."""
+        """Train the single 5-class dose-quality model on normalized rows.
+        Returns (pipe, holdout_risk_accuracy) — the retrained live model is the
+        same one model that serves risk + severity + direction."""
         recs = []
         for r in rows:
             f = features.row_to_features(r)
-            f["flagged"] = 1 if r.get("status") in ("over", "under") else 0
+            f["dose_class"] = dose_quality.dose_class(r.get("deviation_pct"), data.TOLERANCE_PCT)
             recs.append(f)
         df = pd.DataFrame.from_records(recs)
         X = df[features.FEATURE_ORDER]
-        y = df["flagged"]
+        y = df["dose_class"]
 
         pre = ColumnTransformer(
             transformers=[
@@ -147,7 +160,7 @@ class LiveEngine:
             ]
         )
         clf = RandomForestClassifier(
-            n_estimators=200, min_samples_leaf=2, class_weight="balanced",
+            n_estimators=50, min_samples_leaf=2, class_weight=None,
             random_state=42, n_jobs=-1,
         )
         pipe = Pipeline([("pre", pre), ("clf", clf)])
@@ -158,7 +171,13 @@ class LiveEngine:
                 X, y, test_size=0.25, random_state=42, stratify=y
             )
             pipe.fit(X_tr, y_tr)
-            acc = float(accuracy_score(y_te, pipe.predict(X_te)))
+            # Derived RISK accuracy on the holdout (flagged vs on_target).
+            classes = list(pipe.named_steps["clf"].classes_)
+            if "on_target" in classes:
+                p_ot = pipe.predict_proba(X_te)[:, classes.index("on_target")]
+                pred_flag = (1 - p_ot) >= 0.5
+                true_flag = y_te.values != "on_target"
+                acc = float(accuracy_score(true_flag, pred_flag))
         except ValueError:
             pass
         # Refit on everything for the served model (best use of the data).
@@ -181,42 +200,39 @@ class LiveEngine:
         return self.ref_product_counts.get(product_name, 0) < RARE_FLOOR
 
     # -- per-batch processing ------------------------------------------------
-    def _recommendation(self, band: str, material_name: str, setpoint: float | None) -> str:
+    # Plain, operator-facing action text — no ML/statistics language. A short
+    # imperative the person on the floor can act on in one glance. Includes
+    # direction when the direction model has an opinion, since "check the
+    # feeder" is far more actionable as "check the feeder — running high".
+    def _recommendation(self, band: str, material_name: str, direction_label: str | None) -> str:
+        hint = f" — {direction_label.lower()}" if direction_label else ""
         if band == "High":
-            rec = f"Recalibrate the {material_name} feeder before this batch runs — high risk of an out-of-tolerance dose."
-        elif band == "Medium":
-            rec = f"Watch the {material_name} dose; consider a slower feed rate and confirm the feeder is clear."
-        else:
-            rec = "No action needed — dose predicted on target."
-        if setpoint is not None and 0 < setpoint < features.MICRO_THRESHOLD_KG:
-            rec += " Micro-ingredient: a few grams of feeder error is a large percentage deviation."
-        return rec
+            return f"Check the {material_name} feeder before this batch{hint}"
+        if band == "Medium":
+            return f"Keep an eye on {material_name}{hint}"
+        return ""
 
     def _score(self, row: dict) -> dict:
+        # ONE model → risk + severity + direction, all from a single scoring
+        # pass over its 5-class probabilities (guaranteed self-consistent).
         feat = features.row_to_features(row)
         frame = pd.DataFrame([feat])[features.FEATURE_ORDER]
-        risk = float(self.model.predict_proba(frame)[:, 1][0])
-        band = _band(risk)
-        pred_flag = 1 if risk >= 0.5 else 0
+        proba = self.model.predict_proba(frame)[0]
+        probs = {c: float(p) for c, p in zip(self.model.classes_, proba)}
+        d = predictor_dose._derive(probs)
+
+        risk = d["risk"]
+        band = d["band"]
+        pred_flag = 1 if risk >= 0.5 else 0  # for rolling-accuracy vs ground truth
+        severity, severity_label = d["severity"], d["severity_label"]
+        # Direction only shown once the dose is flagged (Medium/High), matching
+        # the feed's "flagged" highlight and the conditional severity.
+        direction = d["direction"] if d["flagged"] else None
+        direction_label = d["direction_label"] if d["flagged"] else None
 
         actual_status = row.get("status")          # on_target / over / under
         actual_flag = 1 if actual_status in ("over", "under") else 0
         dev_pct = row.get("deviation_pct")
-
-        # Second model (static): severity triage, for the operator drill-down.
-        severity = severity_label = None
-        try:
-            sev = predictor_severity.predict(
-                material_code=row.get("material_code"),
-                product_name=row.get("product_name"),
-                setpoint=row.get("setpoint"),
-                quantity=row.get("quantity"),
-                category=row.get("category"),
-            )
-            severity = sev.get("severity")
-            severity_label = sev.get("severity_label")
-        except Exception:
-            pass
 
         return {
             "id": uuid.uuid4().hex[:12],
@@ -237,7 +253,9 @@ class LiveEngine:
             "correct": pred_flag == actual_flag,
             "severity": severity,
             "severity_label": severity_label,
-            "recommendation": self._recommendation(band, row.get("material_name") or "this", row.get("setpoint")),
+            "direction": direction,
+            "direction_label": direction_label,
+            "recommendation": self._recommendation(band, row.get("material_name") or "this", direction_label),
             "model_version": self.model_version,
             "at": _now_iso(),
             "_pred_flag": pred_flag,
@@ -279,6 +297,7 @@ class LiveEngine:
             s["rolling_accuracy"] = round(win_correct / len(self.window) * 100, 1)
 
         self._check_drift()
+        self._check_maintenance()
         return True
 
     # -- drift + retrain -----------------------------------------------------
@@ -314,6 +333,28 @@ class LiveEngine:
         if trigger:
             threading.Thread(target=self._retrain, daemon=True).start()
 
+    def _check_maintenance(self) -> None:
+        """A separate, more serious signal than drift: if the AI's predictions
+        stop matching reality even after accounting for normal noise, a
+        retrain won't fix it — that points at a hardware/equipment problem
+        (bad sensor, miscalibrated feeder). Edge-triggered with hysteresis so
+        it alerts once, not on every tick while accuracy stays low.
+        """
+        with self._lock:
+            acc = self.stats.get("rolling_accuracy")
+            if acc is None:
+                return
+            if acc < MAINTENANCE_ACCURACY_FLOOR and not self._maintenance_alerted:
+                self._maintenance_alerted = True
+                self._notify(
+                    "maintenance",
+                    "Call Maintenance",
+                    "The AI's predictions aren't matching what's actually happening on the line. "
+                    "Have someone check the equipment.",
+                )
+            elif acc >= MAINTENANCE_ACCURACY_FLOOR + MAINTENANCE_RECOVER_BUFFER and self._maintenance_alerted:
+                self._maintenance_alerted = False
+
     def _retrain(self) -> None:
         with self._lock:
             if self.retraining:
@@ -321,15 +362,12 @@ class LiveEngine:
             self.retraining = True
             train_rows = list(self._ref_rows) + list(self._stream[: self.cursor])
             recipes = self.drift.get("new_recipes") or []
-            recipe_txt = ""
-            if recipes:
-                shown = ", ".join(recipes[:3]) + ("…" if len(recipes) > 3 else "")
-                recipe_txt = f" The plant started running recipes the model wasn't trained on ({shown})."
+            recipe_txt = f' New recipe: "{recipes[0]}".' if recipes else ""
             self._notify(
                 "drift",
-                "Data drift detected",
-                "Incoming batches no longer match the model's training data." + recipe_txt
-                + " Retraining on the latest production data — predictions continue uninterrupted.",
+                "AI noticed something new",
+                "The AI is quietly updating itself for a new product." + recipe_txt
+                + " This happens automatically — no action needed.",
             )
 
         # Train OFF the lock so the current model keeps serving with zero downtime.
@@ -345,12 +383,10 @@ class LiveEngine:
             self._capture_reference(train_rows)
             self._last_retrain = time.time()
             self.retraining = False
-            acc_txt = f" (validation accuracy {acc * 100:.0f}%)" if acc is not None else ""
             self._notify(
                 "retrain",
-                f"Model retrained — now v{self.model_version}",
-                f"Retrained on {len(train_rows)} batches{acc_txt}. The model now "
-                "recognises the new production mix and is live. No operator action needed.",
+                "AI Updated",
+                "Ready for the new recipe. No action needed.",
             )
 
     def _notify(self, kind: str, title: str, message: str) -> None:
@@ -400,6 +436,7 @@ class LiveEngine:
             self.drift = self._warming_drift()
             self._last_retrain = 0.0
             self.retraining = False
+            self._maintenance_alerted = False
         self._fit_reference()
         with self._lock:
             self.running = True
