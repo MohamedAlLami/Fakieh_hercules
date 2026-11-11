@@ -557,6 +557,22 @@ def fetch_silo_qty_from_plc() -> Dict[int, float]:
     return qty
 
 
+_PLC_LINK_ERROR_WORDS = ("tcp", "connect", "socket", "timeout", "timed out", "winerror", "errno",
+                         "unreachable", "reset", "refused", "broken pipe", "stale", "recv", "send",
+                         "iso ", "not initialized", "job pending")
+
+
+def _is_plc_link_error(exc: Exception) -> bool:
+    """True when the exception means the PLC could not be reached, not that it said no."""
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return True
+    name = type(exc).__name__.lower()
+    if "connection" in name or "timeout" in name:
+        return True
+    msg = str(exc).lower()
+    return any(w in msg for w in _PLC_LINK_ERROR_WORDS)
+
+
 def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
     """Uncached read of part of a data block.
 
@@ -576,10 +592,10 @@ def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
             with CLIENT_LOCK:
                 return bytes(cli.db_read(db_no, start, size))
         except Exception as e:
-            msg = str(e).lower()
-            # "Address out of range" / "Item not available" are real answers from the PLC: the block
-            # is shorter or absent. Anything else is a transport problem: reconnect and try once more.
-            if "out of range" in msg or "not available" in msg or "does not exist" in msg:
+            # The PLC answering "no such block" / "address out of range" is a real answer (wording
+            # differs between snap7 versions), so only a recognisable LINK failure counts as
+            # "could not ask": reconnect and try once more.
+            if not _is_plc_link_error(e):
                 return None
             CLIENT = None
             last_error = e
