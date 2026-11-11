@@ -258,7 +258,13 @@ export function BatchHistoricalReports() {
         (Math.abs(((group.actualKG - group.plannedKG) / group.plannedKG) * 100)).toFixed(2) : "0.00";
     });
 
-    return Object.values(groups);
+    // Sort by material code in number order (2 before 10 before 100); empty codes go last
+    return Object.values(groups).sort((a: any, b: any) => {
+      const ca = String(a.code ?? '').trim();
+      const cb = String(b.code ?? '').trim();
+      if (!ca || !cb) return ca ? -1 : cb ? 1 : 0;
+      return ca.localeCompare(cb, undefined, { numeric: true });
+    });
   };
 
   // Pending filter values (UI) - now arrays for multi-select
@@ -445,7 +451,7 @@ export function BatchHistoricalReports() {
   }, [activeTab]);
 
   // Fetch daily report data when Detailed Report or Material Consumption Report is active.
-  // Use Saudi 07:00→07:00 range from filters so totals match Batch Calendar production days.
+  // Use Saudi 00:00→00:00 range from filters so totals match Batch Calendar production days.
   useEffect(() => {
     if (activeTab === "Detailed Report" || activeTab === "Material Consumption Report") {
       fetchReportData('daily', appliedStartDate, appliedEndDate);
@@ -526,7 +532,7 @@ export function BatchHistoricalReports() {
     /**
      * Daily summary from Batch Calendar APIs (same numbers as the calendar card / popup).
      *
-     * Live server still groups by UTC calendar day (CAST AS DATE). Querying a 07:00→07:00
+     * Live server still groups by UTC calendar day (CAST AS DATE). Querying a 00:00→00:00
      * ISO window only returns a partial day (e.g. 118). The calendar card uses the full
      * UTC day, so Daily must call calendar with date-only bounds:
      *   startDate=YYYY-MM-DD, endDate=next day  → matches card (149 / ~670.97 t).
@@ -544,7 +550,7 @@ export function BatchHistoricalReports() {
         });
 
       // 1) Old CAST-AS-DATE servers: date → next date (full UTC day)
-      // 2) New 07:00 servers: same date twice (expands to D 07:00 → D+1 07:00)
+      // 2) New 00:00 servers: same date twice (expands to D 00:00 → D+1 00:00)
       let days: any[] = [];
       for (const [a, b] of [
         [dateKey, nextKey],

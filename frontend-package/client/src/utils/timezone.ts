@@ -1,6 +1,9 @@
 /** Business timezone — DB stores UTC; UI uses Asia/Riyadh (UTC+3). */
 export const BUSINESS_TZ = 'Asia/Riyadh';
 
+/** Production day start hour, Saudi local time: 0 = midnight, so a day is the Saudi calendar day. Changed 7 -> 12 -> 0 on client request (2026-11-07). */
+export const PRODUCTION_DAY_START_HOUR = 0;
+
 export interface SaudiDateParts {
   year: number;
   month: number;
@@ -50,7 +53,7 @@ export function saudiDatetimeLocalToUtcIso(datetimeLocal: string): string {
 
 /**
  * UTC midnight–end calendar-day bounds (legacy).
- * Prefer Saudi 07:00→07:00 production days for Batch Calendar / reports.
+ * Prefer Saudi 00:00→00:00 production days for Batch Calendar / reports.
  */
 export function utcCalendarDayRange(dateOrDatetimeLocal: string): {
   startIso: string;
@@ -140,32 +143,32 @@ export function formatSaudiTimeLabel(datetimeLocal: string, options: Intl.DateTi
   return utc.toLocaleTimeString('en-US', { timeZone: BUSINESS_TZ, ...options });
 }
 
-/** Production day default: yesterday 07:00 → today 07:00 (Saudi). */
+/** Production day default: yesterday 00:00 → today 00:00 (Saudi). */
 export function getDefaultProductionDayRange(): { startDate: string; endDate: string } {
   const nowParts = getSaudiPartsForInstant(new Date());
-  const endDate = toDatetimeLocal(nowParts.year, nowParts.month, nowParts.day, 7, 0);
-  const endUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, 7, 0);
+  const endDate = toDatetimeLocal(nowParts.year, nowParts.month, nowParts.day, PRODUCTION_DAY_START_HOUR, 0);
+  const endUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, PRODUCTION_DAY_START_HOUR, 0);
   const startUtc = new Date(endUtc.getTime() - 24 * 60 * 60 * 1000);
   const startParts = getSaudiPartsForInstant(startUtc);
-  const startDate = toDatetimeLocal(startParts.year, startParts.month, startParts.day, 7, 0);
+  const startDate = toDatetimeLocal(startParts.year, startParts.month, startParts.day, PRODUCTION_DAY_START_HOUR, 0);
   return { startDate, endDate };
 }
 
-/** Batch calendar default: 1st of current Saudi month 07:00 → 1st of next month 07:00. */
+/** Batch calendar default: 1st of current Saudi month 00:00 → 1st of next month 00:00. */
 export function getDefaultCalendarMonthRange(): { startDate: string; endDate: string } {
   const nowParts = getSaudiPartsForInstant(new Date());
-  const startDate = toDatetimeLocal(nowParts.year, nowParts.month, 1, 7, 0);
+  const startDate = toDatetimeLocal(nowParts.year, nowParts.month, 1, PRODUCTION_DAY_START_HOUR, 0);
   let y = nowParts.year;
   let m = nowParts.month + 1;
   if (m > 12) {
     m = 1;
     y += 1;
   }
-  const endDate = toDatetimeLocal(y, m, 1, 7, 0);
+  const endDate = toDatetimeLocal(y, m, 1, PRODUCTION_DAY_START_HOUR, 0);
   return { startDate, endDate };
 }
 
-/** Weekly / daily / monthly tab defaults (7 AM Saudi). */
+/** Weekly / daily / monthly tab defaults (00:00 Saudi). */
 export function getSpecificDateDefaults(): {
   weeklyStart: string;
   dailyStart: string;
@@ -173,14 +176,14 @@ export function getSpecificDateDefaults(): {
 } {
   const nowParts = getSaudiPartsForInstant(new Date());
   const dailyStart = (() => {
-    const endUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, 7, 0);
+    const endUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, PRODUCTION_DAY_START_HOUR, 0);
     const startUtc = new Date(endUtc.getTime() - 24 * 60 * 60 * 1000);
     const p = getSaudiPartsForInstant(startUtc);
-    return toDatetimeLocal(p.year, p.month, p.day, 7, 0);
+    return toDatetimeLocal(p.year, p.month, p.day, PRODUCTION_DAY_START_HOUR, 0);
   })();
 
   const weeklyStart = (() => {
-    const todayUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, 7, 0);
+    const todayUtc = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, PRODUCTION_DAY_START_HOUR, 0);
     const dayOfWeek = new Date(todayUtc).toLocaleDateString('en-US', { timeZone: BUSINESS_TZ, weekday: 'short' });
     const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
     const dow = dowMap[dayOfWeek.slice(0, 3)] ?? 0;
@@ -188,7 +191,7 @@ export function getSpecificDateDefaults(): {
     const thisMondayUtc = new Date(todayUtc.getTime() - daysToThisMonday * 24 * 60 * 60 * 1000);
     const lastMondayUtc = new Date(thisMondayUtc.getTime() - 7 * 24 * 60 * 60 * 1000);
     const p = getSaudiPartsForInstant(lastMondayUtc);
-    return toDatetimeLocal(p.year, p.month, p.day, 7, 0);
+    return toDatetimeLocal(p.year, p.month, p.day, PRODUCTION_DAY_START_HOUR, 0);
   })();
 
   const monthlyStart = (() => {
@@ -198,16 +201,16 @@ export function getSpecificDateDefaults(): {
       m = 12;
       y -= 1;
     }
-    return toDatetimeLocal(y, m, 1, 7, 0);
+    return toDatetimeLocal(y, m, 1, PRODUCTION_DAY_START_HOUR, 0);
   })();
 
   return { weeklyStart, dailyStart, monthlyStart };
 }
 
-/** Dashboard default: previous calendar week Mon 07:00 → this Mon 07:00 (Saudi). */
+/** Dashboard default: previous calendar week Mon 00:00 → this Mon 00:00 (Saudi). */
 export function getDefaultDashboardWeekRange(): { startDate: Date; endDate: Date } {
   const nowParts = getSaudiPartsForInstant(new Date());
-  const endDate = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, 7, 0);
+  const endDate = saudiLocalToUtcDate(nowParts.year, nowParts.month, nowParts.day, PRODUCTION_DAY_START_HOUR, 0);
   const dayOfWeek = new Date(endDate).toLocaleDateString('en-US', { timeZone: BUSINESS_TZ, weekday: 'short' });
   const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
   const dow = dowMap[dayOfWeek.slice(0, 3)] ?? 0;
@@ -243,7 +246,7 @@ export function addSaudiMonths(datetimeLocal: string, months: number): string {
   return toDatetimeLocal(y, m, p.day, p.hour, p.minute);
 }
 
-/** Previous calendar month, 07:00 Saudi (for raw data default range). */
+/** Previous calendar month, 00:00 Saudi (for raw data default range). */
 export function getDefaultPreviousMonthRange(): { startDate: string; endDate: string } {
   const p = getSaudiPartsForInstant(new Date());
   let y = p.year;
@@ -253,12 +256,12 @@ export function getDefaultPreviousMonthRange(): { startDate: string; endDate: st
     y -= 1;
   }
   const nextMonth = m === 12 ? { year: y + 1, month: 1 } : { year: y, month: m + 1 };
-  const monthEndUtc = saudiLocalToUtcDate(nextMonth.year, nextMonth.month, 1, 7, 0);
+  const monthEndUtc = saudiLocalToUtcDate(nextMonth.year, nextMonth.month, 1, PRODUCTION_DAY_START_HOUR, 0);
   const lastDayUtc = new Date(monthEndUtc.getTime() - 24 * 60 * 60 * 1000);
   const lastDay = getSaudiPartsForInstant(lastDayUtc).day;
   return {
-    startDate: toDatetimeLocal(y, m, 1, 7, 0),
-    endDate: toDatetimeLocal(y, m, lastDay, 7, 0),
+    startDate: toDatetimeLocal(y, m, 1, PRODUCTION_DAY_START_HOUR, 0),
+    endDate: toDatetimeLocal(y, m, lastDay, PRODUCTION_DAY_START_HOUR, 0),
   };
 }
 

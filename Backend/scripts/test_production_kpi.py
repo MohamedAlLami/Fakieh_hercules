@@ -346,8 +346,8 @@ def test_resolve_window():
     start, end, mode = resolve("/?date=2025-03-28")
     check("a production day is exactly 24 h", round((end - start).total_seconds() / 3600, 3), 24.0)
     check("a production day reports its mode", mode, "production_day")
-    # 07:00 Asia/Riyadh is 04:00 UTC, and the columns are naive UTC.
-    check("a production day opens at 07:00 plant time", start.hour, 4)
+    # 00:00 Asia/Riyadh is 21:00 UTC the day before, and the columns are naive UTC.
+    check("a production day opens at 00:00 plant time", start.hour, 21)
 
     _, _, mode = resolve("/?mode=PRODUCTION_DAY")
     check("mode matching is case-insensitive", mode, "production_day")
@@ -539,7 +539,7 @@ def test_production_day_buckets():
     """Past 48 h the chart switches to one bar per production day (07:00 AST)."""
     print("\nproduction-day buckets")
     # A week, which as hourly bars would be 168 of them.
-    ws = datetime(2025, 3, 24, 4, 0)
+    ws = datetime(2025, 3, 23, 21, 0)
     we = ws + timedelta(days=7)
 
     def batch(start, kg=3000.0):
@@ -558,9 +558,9 @@ def test_production_day_buckets():
     rows = [
         batch(datetime(2025, 3, 25, 9, 0)),    # morning, after 07:00
         batch(datetime(2025, 3, 25, 20, 0)),   # evening, same production day
-        # 03:00 UTC is 06:00 plant time -- before the 07:00 turnover, so this
-        # belongs to the PREVIOUS production day despite its calendar date.
-        batch(datetime(2025, 3, 26, 3, 0)),
+        # 21:30 UTC on the 24th is 00:30 plant time on the 25th -- after the midnight
+        # turnover, so it belongs to the 25th despite its UTC date.
+        batch(datetime(2025, 3, 24, 21, 30)),
     ]
     kpi = compute_production_kpi(rows, ws, we, now=we)
     buckets = kpi["buckets"]
@@ -569,18 +569,18 @@ def test_production_day_buckets():
     check("a week is seven buckets, not 168", len(buckets), 7)
     check("every bucket is 24 h",
           all((b["end"] - b["start"]) == timedelta(days=1) for b in buckets), True)
-    # 07:00 Asia/Riyadh is 04:00 UTC, and the columns are naive UTC.
-    check("days open at 07:00 plant time", all(b["start"].hour == 4 for b in buckets), True)
+    # 00:00 Asia/Riyadh is 21:00 UTC the day before, and the columns are naive UTC.
+    check("days open at 00:00 plant time", all(b["start"].hour == 21 for b in buckets), True)
     check("no gaps between days",
           all(buckets[i]["start"] == buckets[i - 1]["end"] for i in range(1, len(buckets))), True)
 
     holding = [b for b in buckets if b["batches"]]
     check("all three land on one production day", len(holding), 1)
-    check("which is the 25th", holding[0]["start"], datetime(2025, 3, 25, 4, 0))
+    check("which is the 25th", holding[0]["start"], datetime(2025, 3, 24, 21, 0))
     # The 05:00 batch is the point: by calendar date it is the 26th, but the
     # plant's day does not turn over until 07:00, and /api/kpi_calendar books
     # it to the 25th. This card must agree.
-    check("an 06:00 plant-time batch belongs to the previous production day",
+    check("a 00:30 plant-time batch belongs to its plant day, not its UTC date",
           holding[0]["batches"], 3)
     check("tonnage sums to the total", round(sum(b["tons"] for b in buckets), 3), kpi["tons"])
 

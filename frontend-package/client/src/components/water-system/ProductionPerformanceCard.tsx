@@ -108,9 +108,9 @@ function bucketLabel(
   const start = parseUtcDate(from)
   if (!start) return 'No data'
   if (granularity === 'day') {
-    // The plant's day, not the calendar's: 07:00 to 07:00, which is how the
+    // The plant's day, not the calendar's: 00:00 to 24:00, which is how the
     // Batch Calendar books a batch too.
-    return `Production day ${dayFmt.format(start)} · 07:00 to 07:00`
+    return `Production day ${dayFmt.format(start)} · 00:00 to 24:00`
   }
   const end = parseUtcDate(to) ?? new Date(start.getTime() + 3600000)
   return `Hour ${timeFmt.format(start)} - ${timeFmt.format(end)}`

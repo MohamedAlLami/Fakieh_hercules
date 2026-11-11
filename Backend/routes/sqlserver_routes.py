@@ -6,7 +6,7 @@ import logging
 
 from config import SQLSERVER_BATCH_MATERIALS_TABLE, SQLSERVER_DATABASE
 from models import db
-from utils.timezone import BUSINESS_TZ, format_db_datetime_utc_iso, parse_request_datetime
+from utils.timezone import BUSINESS_TZ, format_db_datetime_utc_iso, parse_request_datetime, PRODUCTION_DAY_START_HOUR
 
 UTC = timezone.utc
 
@@ -187,11 +187,11 @@ def _naive_utc_to_saudi_dt(dt: datetime) -> datetime:
 
 
 def _last_week_saudi_bounds() -> tuple[datetime, datetime]:
-    """Previous Mon 07:00 → this Mon 07:00 (Saudi), matching dashboard week."""
+    """Previous Mon 00:00 → this Mon 00:00 (Saudi), matching dashboard week."""
     now_saudi = datetime.now(UTC).astimezone(BUSINESS_TZ)
     monday_offset = now_saudi.weekday()
     this_monday = (now_saudi - timedelta(days=monday_offset)).replace(
-        hour=7, minute=0, second=0, microsecond=0
+        hour=PRODUCTION_DAY_START_HOUR, minute=0, second=0, microsecond=0
     )
     if now_saudi < this_monday:
         this_monday -= timedelta(days=7)

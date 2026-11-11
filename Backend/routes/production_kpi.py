@@ -67,6 +67,7 @@ from sqlalchemy import text
 
 from config import SQLSERVER_BATCH_MATERIALS_TABLE, SQLSERVER_DATABASE
 from models import db
+from utils.timezone import PRODUCTION_DAY_START_HOUR
 from utils.timezone import (
     BUSINESS_TZ,
     format_db_datetime_utc_iso,
@@ -332,23 +333,23 @@ def compute_production_kpi(
 
 
 def _production_day_floor(dt: datetime) -> datetime:
-    """The 07:00 plant-time day boundary at or before `dt`, in naive UTC.
+    """The 00:00 plant-time day boundary at or before `dt`, in naive UTC.
 
-    The plant's day runs 07:00 to 07:00 Asia/Riyadh, which is how
+    The plant's day runs 00:00 to 00:00 Asia/Riyadh, which is how
     /api/kpi_calendar buckets a batch; Riyadh is UTC+3 with no DST, so this is
     the same instant every day, but it is derived rather than hardcoded so it
     stays right if that ever stops being true.
     """
     local = dt.replace(tzinfo=UTC).astimezone(BUSINESS_TZ)
-    day = local.date() if local.hour >= 7 else (local - timedelta(days=1)).date()
-    return saudi_local_to_utc_naive(day.year, day.month, day.day, 7, 0)
+    day = local.date() if local.hour >= PRODUCTION_DAY_START_HOUR else (local - timedelta(days=1)).date()
+    return saudi_local_to_utc_naive(day.year, day.month, day.day, PRODUCTION_DAY_START_HOUR, 0)
 
 
 def _bucket_edges(window_start: datetime, window_end: datetime):
     """The bucket boundaries covering the window, and what they are called.
 
     Clock hours for a short window, production days for a long one. Either
-    way the edges are real plant boundaries -- the top of an hour, or 07:00 --
+    way the edges are real plant boundaries -- the top of an hour, or 00:00 --
     rather than offsets from a window that opens at an arbitrary minute.
     """
     if window_end - window_start <= HOURLY_BUCKET_LIMIT:
@@ -485,7 +486,7 @@ BATCH_ROLLUP_SQL = """
 def _resolve_window():
     """Work out the window from the query string.
 
-    ?date=YYYY-MM-DD      that production day, 07:00 AST to 07:00 AST
+    ?date=YYYY-MM-DD      that production day, 00:00 AST to 00:00 AST
     ?mode=production_day  the production day in progress right now
     ?startDate=&endDate=  an explicit range, read the way the Batch Calendar
                           reads one
@@ -507,8 +508,8 @@ def _resolve_window():
     mode = (request.args.get("mode") or "").strip().lower()
     if mode == "production_day":
         now_local = datetime.now(BUSINESS_TZ)
-        day = now_local.date() if now_local.hour >= 7 else (now_local - timedelta(days=1)).date()
-        start = saudi_local_to_utc_naive(day.year, day.month, day.day, 7, 0)
+        day = now_local.date() if now_local.hour >= PRODUCTION_DAY_START_HOUR else (now_local - timedelta(days=1)).date()
+        start = saudi_local_to_utc_naive(day.year, day.month, day.day, PRODUCTION_DAY_START_HOUR, 0)
         return start, start + timedelta(days=1), "production_day"
 
     start_str = request.args.get("startDate")
@@ -520,7 +521,7 @@ def _resolve_window():
             # of wrong number this card exists to avoid.
             raise ValueError("startDate and endDate must be given together")
         # parse_calendar_range, not parse_request_datetime: the former reads a
-        # naive "2025-03-28T07:00" as Saudi wall time the way the Batch Calendar
+        # naive "2025-03-28T00:00" as Saudi wall time the way the Batch Calendar
         # does, the latter would read it as UTC and land the window three hours
         # off the calendar's for the identical query string.
         start, end = parse_calendar_range(start_str, end_str)

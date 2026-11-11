@@ -35,7 +35,7 @@ DEFAULT_SAVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dis
 REPORT_CATALOG = [
     {'key': 'daily', 'label': 'Daily Report', 'description': 'Per-product production summary — last 1 production day', 'source': 'sqlserver'},
     {'key': 'weekly', 'label': 'Weekly Report', 'description': 'Per-product production summary — last 7 production days', 'source': 'sqlserver'},
-    {'key': 'monthly', 'label': 'Monthly Report', 'description': 'Per-product production summary — previous calendar month (07:00 AST)', 'source': 'sqlserver'},
+    {'key': 'monthly', 'label': 'Monthly Report', 'description': 'Per-product production summary — previous calendar month (00:00 AST)', 'source': 'sqlserver'},
     {'key': 'detailed', 'label': 'Detailed Report', 'description': 'Per-batch material detail (SQL Server, read-only)', 'source': 'sqlserver'},
     {'key': 'material', 'label': 'Material Consumption', 'description': 'Planned vs actual material usage (SQL Server, read-only)', 'source': 'sqlserver'},
     {'key': 'batch_historical', 'label': 'Batch Historical Reports', 'description': 'Per-batch material detail (SQL Server, read-only)', 'source': 'sqlserver'},
@@ -52,7 +52,7 @@ def get_report_catalog():
 def _resolve_window_for_source(source_key, rule):
     """Compute ``(from_dt, to_dt)`` naive UTC for one report source.
 
-    ``daily`` / ``weekly`` / ``monthly`` use the same 07:00 AST windows as
+    ``daily`` / ``weekly`` / ``monthly`` use the same 00:00 AST windows as
     ``BatchHistoricalReports`` (not the rule's schedule_type or 30-day lookback).
     """
     window_mode = getattr(rule, 'window_mode', 'auto') or 'auto'

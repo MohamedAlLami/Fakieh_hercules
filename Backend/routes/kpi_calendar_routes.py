@@ -1,7 +1,7 @@
 """Batch calendar aggregates from SQL Server batch materials table.
 
-Days are Saudi production days: 07:00 AST → next day 07:00 AST
-(equivalent to CAST(DATEADD(hour, -4, [Batch Act Start]) AS DATE) on UTC columns).
+Days are Saudi production days: 00:00 AST → next day 00:00 AST
+(equivalent to CAST(DATEADD(hour, 3, [Batch Act Start]) AS DATE) on UTC columns).
 """
 from flask import Blueprint, request, jsonify
 from models import db
@@ -34,7 +34,7 @@ def get_kpi_calendar():
         start_date, end_date = parse_calendar_range(start_date_str, end_date_str)
 
         tbl = SQLSERVER_BATCH_MATERIALS_TABLE
-        # Production-day label: shift UTC by -4h so 07:00 AST aligns to midnight boundary
+        # Production-day label: shift UTC by +3h so 00:00 AST aligns to the date boundary
         prod_day = (
             f"CAST(DATEADD(hour, {PRODUCTION_DAY_UTC_OFFSET_HOURS}, "
             f"dbo.[{tbl}].[Batch Act Start]) AS DATE)"

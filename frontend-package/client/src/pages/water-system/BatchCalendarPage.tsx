@@ -57,7 +57,7 @@ export function BatchCalendarPage() {
       
       const response = await axios.get(API_ENDPOINTS.BATCH_KPI_CALENDAR, {
         params: {
-          // Saudi datetime-local → UTC ISO; backend buckets by 07:00→07:00 production days
+          // Saudi datetime-local → UTC ISO; backend buckets by 00:00→00:00 production days
           startDate: saudiDatetimeLocalToUtcIso(startDate),
           endDate: saudiDatetimeLocalToUtcIso(endDate),
         },
@@ -81,7 +81,7 @@ export function BatchCalendarPage() {
     try {
         setDetailsLoading(true);
         setDetailsError(null);
-        // Production-day label (YYYY-MM-DD); backend expands to D 07:00 → D+1 07:00 AST
+        // Production-day label (YYYY-MM-DD); backend expands to D 00:00 → D+1 00:00 AST
         const response = await axios.get(API_ENDPOINTS.BATCH_KPI_CALENDAR_DETAILS, {
             params: { date: dateKey(date) },
         });
@@ -106,7 +106,7 @@ export function BatchCalendarPage() {
     }
   };
 
-  // Production-day cards for half-open range [start, end) — e.g. Jul 1 07:00 → Aug 1 07:00 → Jul 1..31
+  // Production-day cards for half-open range [start, end) — e.g. Jul 1 00:00 → Aug 1 00:00 → Jul 1..31
   const getDateRangeArray = (start: string, end: string) => {
     if (!start || !end) return [];
     const startKey = dateKey(start);
@@ -188,7 +188,7 @@ export function BatchCalendarPage() {
     <>
       <WaterSystemLayout
         title="Batch calendar"
-        subtitle="Daily production totals (07:00–07:00 AST), batches, and products from batch materials"
+        subtitle="Daily production totals (00:00–24:00 AST), batches, and products from batch materials"
       >
         <div className="space-y-6">
           {/* Header with Filters */}
@@ -201,7 +201,7 @@ export function BatchCalendarPage() {
               </h1>
             </div>
 
-            {/* Date Filters — Saudi production-day window (default 07:00) */}
+            {/* Date Filters — Saudi production-day window (default 00:00) */}
             <div className="flex flex-wrap gap-3">
               <div className="flex flex-col">
                 <Label className="mb-1 text-sm font-medium text-slate-800 dark:text-cyan-300">

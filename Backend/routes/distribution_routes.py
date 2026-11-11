@@ -109,15 +109,15 @@ def _validate(data):
     if window_mode not in ('auto', 'custom'):
         errors.append('window_mode must be auto or custom')
 
-    def _parse_time(value, default='07:00'):
+    def _parse_time(value, default='00:00'):
         s = str(value or default)
         if not re.match(r'^\d{1,2}:\d{2}$', s):
             return None
         h, m = s.split(':')
         return time(int(h), int(m))
 
-    window_start_time = _parse_time(data.get('window_start_time', '07:00'))
-    window_end_time = _parse_time(data.get('window_end_time', '07:00'))
+    window_start_time = _parse_time(data.get('window_start_time', '00:00'))
+    window_end_time = _parse_time(data.get('window_end_time', '00:00'))
     if window_start_time is None or window_end_time is None:
         errors.append('window_start_time / window_end_time must be in HH:MM format')
 
