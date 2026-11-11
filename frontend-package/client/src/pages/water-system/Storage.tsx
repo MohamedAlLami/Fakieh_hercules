@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { WaterSystemLayout } from "../../components/water-system/WaterSystemLayout";
 import { KPICard } from "../../components/water-system/KPICard";
-import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap, Printer, Pencil } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap, Printer, Pencil, FileSpreadsheet } from "lucide-react";
 import asmLogo from "@/assets/Asm_Logo.png";
 import fakiehBrandLogo from "@/assets/fakiehlogo.webp";
 import herculesLogo from "@/assets/Hercules_New.png";
@@ -28,6 +28,9 @@ import { useSilos, useSilosPolling } from "../../contexts/SiloContext";
 import { usePolling } from "../../hooks/usePolling";
 import { fetchTempSilos, type TempSilo } from "../../api/tempSilos";
 import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
+import { useRowSelection } from "../../hooks/useRowSelection";
+import { rowsToPrint } from "../../utils/printTable";
+import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 
 const TEMP_GROUP = "temp";
 const TEMP_GROUP_LABEL = "Temporary silos (1001–1200)";
@@ -207,6 +210,58 @@ export function Storage() {
     );
   });
 
+  // Tick boxes: print or export only the ticked silos, or everything shown when none is ticked.
+  type StorageRow = (typeof filteredSilos)[number];
+  const siloKey = (s: StorageRow) => `${s.dbSource}-${s.silo_no ?? s.bin_name}`;
+  const selection = useRowSelection(filteredSilos.map(siloKey));
+  const siloStatus = (s: StorageRow) =>
+    s.material_code || s.material_name || s.hl_active || s.lock_active ? "ACTIVE" : s.isTemp ? "FREE" : "EMPTY";
+  const groupTitle =
+    filters.groupFilter === "all"
+      ? "Storage — all groups"
+      : filters.groupFilter === TEMP_GROUP
+        ? `Storage — ${TEMP_GROUP_LABEL}`
+        : `Storage — ${filters.groupFilter} group`;
+  const filterSummary = () => {
+    const summary: string[] = [];
+    if (filters.binName.trim()) summary.push(`Bin: ${filters.binName.trim()}`);
+    if (filters.materialName && filters.materialName !== "all") summary.push(`Material: ${filters.materialName}`);
+    if (filters.materialCode && filters.materialCode !== "all") summary.push(`Code: ${filters.materialCode}`);
+    if (filters.hlActive !== "all") summary.push(`High level: ${filters.hlActive === "true" ? "active" : "inactive"}`);
+    if (filters.lockActive !== "all") summary.push(`Lock: ${filters.lockActive === "true" ? "locked" : "unlocked"}`);
+    if (filters.dbFilter !== "all") summary.push(`Database: ${filters.dbFilter}`);
+    return summary;
+  };
+
+  const handleExcel = async () => {
+    setPrintError(null);
+    const rows = rowsToPrint(filteredSilos, selection.selected, siloKey);
+    const columns: ExportColumn<StorageRow>[] = [
+      { header: "Silo", cell: (s) => s.bin_name },
+      { header: "Material", cell: (s) => s.material_name },
+      { header: "Material Code", cell: (s) => s.material_code },
+      { header: "Quantity (kg)", cell: (s) => s.quantity_kg ?? 0, excel: (s) => s.quantity_kg ?? 0, numeric: true },
+      { header: "High Level", cell: (s) => (s.isTemp ? "" : s.hl_active ? "HIGH" : "NORMAL") },
+      { header: "Lock", cell: (s) => (s.isTemp ? "" : s.lock_active ? "LOCKED" : "UNLOCKED") },
+      { header: "Status", cell: siloStatus },
+    ];
+    const subtitles: string[] = [];
+    const summary = filterSummary();
+    if (summary.length) subtitles.push(`Filters: ${summary.join(" | ")}`);
+    if (selection.count > 0) subtitles.push(`${rows.length} of ${filteredSilos.length} silos selected`);
+    const total = rows.reduce((sum, s) => sum + (s.quantity_kg ?? 0), 0);
+    const err = await exportTableToExcel({
+      title: groupTitle,
+      subtitles,
+      columns,
+      rows,
+      footer: [`Total: ${rows.length} silo${rows.length === 1 ? "" : "s"}`, "", "", total, "", "", ""],
+      filename: "storage",
+      sheetName: "Storage",
+    });
+    setPrintError(err);
+  };
+
   const clearFilters = () => {
     setFilters({
       binName: "",
@@ -244,7 +299,7 @@ export function Storage() {
   // Print exactly the rows currently shown in the table (after all filters)
   const handlePrint = async () => {
     setPrintError(null);
-    const rows = filteredSilos;
+    const rows = rowsToPrint(filteredSilos, selection.selected, siloKey);
     if (rows.length === 0) {
       setPrintError("No silos to print");
       return;
@@ -277,7 +332,9 @@ export function Storage() {
       if (filters.hlActive !== "all") summary.push(`High level: ${filters.hlActive === "true" ? "active" : "inactive"}`);
       if (filters.lockActive !== "all") summary.push(`Lock: ${filters.lockActive === "true" ? "locked" : "unlocked"}`);
       if (filters.dbFilter !== "all") summary.push(`Database: ${filters.dbFilter}`);
-      const filterLine = summary.length > 0 ? `Filters: ${summary.join(" | ")}` : "No other filters";
+      const filterLine =
+        (summary.length > 0 ? `Filters: ${summary.join(" | ")}` : "No other filters") +
+        (selection.count > 0 ? ` | ${rows.length} of ${filteredSilos.length} silos selected` : "");
 
       const totalQty = rows.reduce((sum, s) => sum + (s.quantity_kg ?? 0), 0);
       const bodyRows = rows
@@ -449,7 +506,17 @@ export function Storage() {
               disabled={filteredSilos.length === 0}
             >
               <Printer className="h-4 w-4 mr-2" />
-              Print
+              {selection.count > 0 ? `Print selected (${selection.count})` : "Print"}
+            </Button>
+            <Button
+              onClick={() => { void handleExcel() }}
+              variant="outline"
+              className="text-sm border-slate-600 text-white light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+              disabled={filteredSilos.length === 0}
+              data-testid="storage-excel"
+            >
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              {selection.count > 0 ? `Export selected (${selection.count})` : "Export Excel"}
             </Button>
             {error && (
               <div className="text-red-400 text-sm">
@@ -661,6 +728,16 @@ export function Storage() {
               <Table>
                 <TableHeader>
                   <TableRow className="border-slate-700/30 light:border-gray-200 hover:bg-slate-800/50 light:hover:bg-gray-50">
+                    <TableHead className="w-10">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all shown silos"
+                        className="h-4 w-4 accent-cyan-500 cursor-pointer"
+                        checked={selection.allSelected}
+                        onChange={selection.toggleAll}
+                        disabled={filteredSilos.length === 0}
+                      />
+                    </TableHead>
                     <TableHead className="text-white light:text-gray-900 font-semibold">
                       Silo Name
                     </TableHead>
@@ -700,6 +777,15 @@ export function Storage() {
                             : "bg-slate-900/20 light:bg-blue-50/20 hover:bg-slate-700/30 light:hover:bg-blue-50/40"
                         }`}
                       >
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${silo.bin_name}`}
+                            className="h-4 w-4 accent-cyan-500 cursor-pointer"
+                            checked={selection.selected.has(siloKey(silo))}
+                            onChange={() => selection.toggle(siloKey(silo))}
+                          />
+                        </TableCell>
                         <TableCell className="text-white light:text-gray-900 font-medium">
                           {silo.bin_name}
                         </TableCell>

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { WaterSystemLayout } from "../../components/water-system/WaterSystemLayout";
 import { KPICard } from "../../components/water-system/KPICard";
-import { Filter, Printer, RefreshCw } from "lucide-react";
+import { FileSpreadsheet, Filter, Printer, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -29,6 +29,7 @@ import {
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
 import { useRowSelection } from "../../hooks/useRowSelection";
 import { printTable, rowsToPrint } from "../../utils/printTable";
+import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 
 function fmtTime(ts?: string | null) {
   if (!ts) return "-";
@@ -145,10 +146,11 @@ export default function Weighbridge() {
 
   const selection = useRowSelection(filteredRows.map((r) => r.id));
 
-  // Print the ticked trips, or every trip shown when none is ticked.
-  async function handlePrint() {
+  // What gets printed or exported: the ticked trips, or every trip shown when none is ticked.
+  function logTable() {
     const rows = rowsToPrint(filteredRows, selection.selected, (r) => r.id);
     const kg = (n?: number | null) => (n != null ? Math.round(n).toLocaleString() : "");
+    const raw = (n?: number | null) => (n != null ? Math.round(n) : null);
     const siloText = (r: TruckWeighOrder) =>
       r.silo_no != null
         ? `Silo ${r.silo_no}${r.silo_no >= 1001 && r.silo_no <= 1200 ? " (temp)" : ""}`
@@ -162,31 +164,49 @@ export default function Weighbridge() {
     if (f.length) subtitles.push(`Filters: ${f.join(" | ")}`);
     if (selection.count > 0) subtitles.push(`${rows.length} of ${filteredRows.length} trips selected`);
     const net = rows.reduce((sum, r) => sum + (r.net_kg ?? 0), 0);
+    const columns: ExportColumn<TruckWeighOrder>[] = [
+      { header: "Ticket", cell: (r) => r.ticket },
+      { header: "Order", cell: (r) => r.order_no },
+      { header: "Client", cell: (r) => r.order_client_name },
+      { header: "Plate", cell: (r) => r.truck_plate },
+      { header: "Driver", cell: (r) => r.truck_driver },
+      { header: "Material", cell: (r) => `${r.material_code} ${r.material_name ?? ""}`.trim() },
+      { header: "Silo", cell: siloText },
+      { header: "IN time", cell: (r) => fmtTime(r.first_ts) },
+      { header: "OUT time", cell: (r) => fmtTime(r.second_ts) },
+      { header: "Ordered (kg)", cell: (r) => kg(r.order_quantity_kg), excel: (r) => raw(r.order_quantity_kg), numeric: true },
+      { header: "IN (kg)", cell: (r) => kg(r.first_weight_kg), excel: (r) => raw(r.first_weight_kg), numeric: true },
+      { header: "OUT (kg)", cell: (r) => kg(r.second_weight_kg), excel: (r) => raw(r.second_weight_kg), numeric: true },
+      { header: "NET (kg)", cell: (r) => kg(r.net_kg), excel: (r) => raw(r.net_kg), numeric: true },
+    ];
+    const label = `Total: ${rows.length} trip${rows.length === 1 ? "" : "s"}`;
+    const blanks = ["", "", "", "", "", "", "", "", "", "", ""];
+    return { rows, columns, subtitles, net, label, blanks, kg };
+  }
+
+  async function handlePrint() {
+    const t = logTable();
     const err = await printTable({
       title: "Weighbridge Log",
-      subtitles,
-      rows,
+      subtitles: t.subtitles,
+      rows: t.rows,
       landscape: true,
-      columns: [
-        { header: "Ticket", cell: (r) => r.ticket },
-        { header: "Order", cell: (r) => r.order_no },
-        { header: "Client", cell: (r) => r.order_client_name },
-        { header: "Plate", cell: (r) => r.truck_plate },
-        { header: "Driver", cell: (r) => r.truck_driver },
-        { header: "Material", cell: (r) => `${r.material_code} ${r.material_name ?? ""}`.trim() },
-        { header: "Silo", cell: siloText },
-        { header: "IN time", cell: (r) => fmtTime(r.first_ts) },
-        { header: "OUT time", cell: (r) => fmtTime(r.second_ts) },
-        { header: "Ordered (kg)", cell: (r) => kg(r.order_quantity_kg), numeric: true },
-        { header: "IN (kg)", cell: (r) => kg(r.first_weight_kg), numeric: true },
-        { header: "OUT (kg)", cell: (r) => kg(r.second_weight_kg), numeric: true },
-        { header: "NET (kg)", cell: (r) => kg(r.net_kg), numeric: true },
-      ],
-      footer: [
-        `Total: ${rows.length} trip${rows.length === 1 ? "" : "s"}`,
-        "", "", "", "", "", "", "", "", "", "", "",
-        kg(net),
-      ],
+      columns: t.columns,
+      footer: [t.label, ...t.blanks, t.kg(t.net)],
+    });
+    setErrorMsg(err);
+  }
+
+  async function handleExcel() {
+    const t = logTable();
+    const err = await exportTableToExcel({
+      title: "Weighbridge Log",
+      subtitles: t.subtitles,
+      rows: t.rows,
+      columns: t.columns,
+      footer: [t.label, ...t.blanks, Math.round(t.net)],
+      filename: `weighbridge-log_${reportDate ?? selectedDate}`,
+      sheetName: "Weighbridge Log",
     });
     setErrorMsg(err);
   }
@@ -260,6 +280,17 @@ export default function Weighbridge() {
               >
                 <Printer className="h-3.5 w-3.5" />
                 {selection.count > 0 ? `Print selected (${selection.count})` : "Print"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleExcel()}
+                disabled={filteredRows.length === 0}
+                className="h-8 gap-1 ml-2"
+                data-testid="wb-log-excel"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                {selection.count > 0 ? `Export selected (${selection.count})` : "Export Excel"}
               </Button>
               </span>
             </CardTitle>
