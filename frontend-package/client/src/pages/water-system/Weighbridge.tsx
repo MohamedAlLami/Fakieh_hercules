@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { WaterSystemLayout } from "../../components/water-system/WaterSystemLayout";
 import { KPICard } from "../../components/water-system/KPICard";
-import { Filter, RefreshCw } from "lucide-react";
+import { Filter, Printer, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -27,6 +27,8 @@ import {
   type TruckWeighOrder,
 } from "../../api/truckEntry";
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { useRowSelection } from "../../hooks/useRowSelection";
+import { printTable, rowsToPrint } from "../../utils/printTable";
 
 function fmtTime(ts?: string | null) {
   if (!ts) return "-";
@@ -141,6 +143,54 @@ export default function Weighbridge() {
     [filteredRows]
   );
 
+  const selection = useRowSelection(filteredRows.map((r) => r.id));
+
+  // Print the ticked trips, or every trip shown when none is ticked.
+  async function handlePrint() {
+    const rows = rowsToPrint(filteredRows, selection.selected, (r) => r.id);
+    const kg = (n?: number | null) => (n != null ? Math.round(n).toLocaleString() : "");
+    const siloText = (r: TruckWeighOrder) =>
+      r.silo_no != null
+        ? `Silo ${r.silo_no}${r.silo_no >= 1001 && r.silo_no <= 1200 ? " (temp)" : ""}`
+        : "";
+    const subtitles = [`Date: ${reportDate ?? selectedDate}`];
+    const f: string[] = [];
+    if (filters.truckId) f.push(`Truck ID: ${filters.truckId}`);
+    if (filters.truckPlate) f.push(`Plate: ${filters.truckPlate}`);
+    if (filters.truckDriver) f.push(`Driver: ${filters.truckDriver}`);
+    if (filters.material !== "all") f.push(`Material: ${filters.material}`);
+    if (f.length) subtitles.push(`Filters: ${f.join(" | ")}`);
+    if (selection.count > 0) subtitles.push(`${rows.length} of ${filteredRows.length} trips selected`);
+    const net = rows.reduce((sum, r) => sum + (r.net_kg ?? 0), 0);
+    const err = await printTable({
+      title: "Weighbridge Log",
+      subtitles,
+      rows,
+      landscape: true,
+      columns: [
+        { header: "Ticket", cell: (r) => r.ticket },
+        { header: "Order", cell: (r) => r.order_no },
+        { header: "Client", cell: (r) => r.order_client_name },
+        { header: "Plate", cell: (r) => r.truck_plate },
+        { header: "Driver", cell: (r) => r.truck_driver },
+        { header: "Material", cell: (r) => `${r.material_code} ${r.material_name ?? ""}`.trim() },
+        { header: "Silo", cell: siloText },
+        { header: "IN time", cell: (r) => fmtTime(r.first_ts) },
+        { header: "OUT time", cell: (r) => fmtTime(r.second_ts) },
+        { header: "Ordered (kg)", cell: (r) => kg(r.order_quantity_kg), numeric: true },
+        { header: "IN (kg)", cell: (r) => kg(r.first_weight_kg), numeric: true },
+        { header: "OUT (kg)", cell: (r) => kg(r.second_weight_kg), numeric: true },
+        { header: "NET (kg)", cell: (r) => kg(r.net_kg), numeric: true },
+      ],
+      footer: [
+        `Total: ${rows.length} trip${rows.length === 1 ? "" : "s"}`,
+        "", "", "", "", "", "", "", "", "", "", "",
+        kg(net),
+      ],
+    });
+    setErrorMsg(err);
+  }
+
   function clearFilters() {
     setFilters({ truckId: "", truckPlate: "", truckDriver: "", material: "all" });
   }
@@ -189,6 +239,7 @@ export default function Weighbridge() {
                 <Filter className="h-4 w-4 text-cyan-400 light:text-blue-600" />
                 Weighbridge filters
               </span>
+              <span className="flex items-center">
               <Button
                 variant="outline"
                 size="sm"
@@ -199,6 +250,18 @@ export default function Weighbridge() {
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Refresh
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handlePrint()}
+                disabled={filteredRows.length === 0}
+                className="h-8 gap-1 ml-2"
+                data-testid="wb-log-print"
+              >
+                <Printer className="h-3.5 w-3.5" />
+                {selection.count > 0 ? `Print selected (${selection.count})` : "Print"}
+              </Button>
+              </span>
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
@@ -301,7 +364,19 @@ export default function Weighbridge() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all shown trips"
+                      className="h-4 w-4 accent-cyan-500 cursor-pointer"
+                      checked={selection.allSelected}
+                      onChange={selection.toggleAll}
+                      disabled={filteredRows.length === 0}
+                    />
+                  </TableHead>
                   <TableHead>Ticket</TableHead>
+                  <TableHead>Order</TableHead>
+                  <TableHead>Client</TableHead>
                   <TableHead>Truck ID</TableHead>
                   <TableHead>Plate</TableHead>
                   <TableHead>Driver</TableHead>
@@ -309,6 +384,7 @@ export default function Weighbridge() {
                   <TableHead>Silo</TableHead>
                   <TableHead>IN time</TableHead>
                   <TableHead>OUT time</TableHead>
+                  <TableHead>Ordered (kg)</TableHead>
                   <TableHead>IN (kg)</TableHead>
                   <TableHead>OUT (kg)</TableHead>
                   <TableHead>NET (kg)</TableHead>
@@ -317,9 +393,20 @@ export default function Weighbridge() {
               <TableBody>
                 {filteredRows.map((row) => (
                   <TableRow key={row.id}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select trip ${row.ticket}`}
+                        className="h-4 w-4 accent-cyan-500 cursor-pointer"
+                        checked={selection.selected.has(row.id)}
+                        onChange={() => selection.toggle(row.id)}
+                      />
+                    </TableCell>
                     <TableCell className="text-slate-400 light:text-gray-500 text-xs font-mono">
                       {row.ticket}
                     </TableCell>
+                    <TableCell className="font-mono">{row.order_no ?? "-"}</TableCell>
+                    <TableCell>{row.order_client_name || "-"}</TableCell>
                     <TableCell className="font-medium text-white light:text-gray-900">
                       {row.truck_id}
                     </TableCell>
@@ -336,6 +423,9 @@ export default function Weighbridge() {
                     <TableCell>{row.silo_no != null ? `Silo ${row.silo_no}${row.silo_no >= 1001 && row.silo_no <= 1200 ? " (temp)" : ""}` : "-"}</TableCell>
                     <TableCell>{fmtTime(row.first_ts)}</TableCell>
                     <TableCell>{fmtTime(row.second_ts)}</TableCell>
+                    <TableCell>
+                      {row.order_quantity_kg != null ? Math.round(row.order_quantity_kg).toLocaleString() : "-"}
+                    </TableCell>
                     <TableCell>
                       {row.first_weight_kg != null ? Math.round(row.first_weight_kg) : "-"}
                     </TableCell>
@@ -377,7 +467,7 @@ export default function Weighbridge() {
                 {filteredRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={11}
+                      colSpan={15}
                       className="text-center py-8 text-sm text-slate-400 light:text-gray-500"
                     >
                       {loading ? "Loading..." : `No completed trips on ${reportDate ?? selectedDate}`}

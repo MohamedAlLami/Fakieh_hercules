@@ -26,6 +26,10 @@ export interface TruckWeighOrder {
   stock_qty_after?: number | null;
   stock_applied_at?: string | null;
   stock_note?: string | null;
+  /** Weighbridge order this trip is for (Management > Weighbridge Orders), if any. */
+  order_no?: number | null;
+  order_client_name?: string | null;
+  order_quantity_kg?: number | null;
 }
 
 export interface SiloOption {
@@ -79,7 +83,8 @@ async function parseJson<T>(res: Response): Promise<T> {
 export async function createTruckWeighOrder(
   truckId: number,
   materialCode: string,
-  siloNo?: number | null
+  siloNo?: number | null,
+  orderNo?: number | null
 ): Promise<TruckWeighOrder> {
   const res = await fetch(`${BASE}/orders`, {
     method: "POST",
@@ -88,6 +93,7 @@ export async function createTruckWeighOrder(
       truck_id: truckId,
       material_code: materialCode,
       ...(siloNo != null ? { silo_no: siloNo } : {}),
+      ...(orderNo != null ? { order_no: orderNo } : {}),
     }),
   });
   const text = await res.text();

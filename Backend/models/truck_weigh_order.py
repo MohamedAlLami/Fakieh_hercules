@@ -31,6 +31,11 @@ class TruckWeighOrder(db.Model):
     stock_qty_after = db.Column(db.Float)
     stock_applied_at = db.Column(db.DateTime(timezone=True))
     stock_note = db.Column(db.String(255))
+    # Weighbridge order this trip is for (Management > Weighbridge Orders). Copied onto the
+    # trip so the log keeps showing it even if the order list changes later.
+    wb_order_no = db.Column(db.Integer)
+    wb_client_name = db.Column(db.String(200))
+    wb_order_qty_kg = db.Column(db.Float)
 
     def compute_net(self):
         if self.first_weight_kg is None or self.second_weight_kg is None:
@@ -70,6 +75,9 @@ class TruckWeighOrder(db.Model):
             "stock_qty_after": self.stock_qty_after,
             "stock_applied_at": self.stock_applied_at.isoformat() if self.stock_applied_at else None,
             "stock_note": self.stock_note,
+            "order_no": self.wb_order_no,
+            "order_client_name": self.wb_client_name,
+            "order_quantity_kg": self.wb_order_qty_kg,
         }
 
 
@@ -95,6 +103,9 @@ def ensure_truck_weigh_orders_table():
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_qty_after DOUBLE PRECISION",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_applied_at TIMESTAMPTZ",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_note VARCHAR(255)",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_order_no INTEGER",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_client_name VARCHAR(200)",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_order_qty_kg DOUBLE PRECISION",
     ]
     try:
         for stmt in column_statements + index_statements:

@@ -50,10 +50,13 @@ export function SearchableSelect({
     const q = norm(query);
     if (!q) return options;
     const words = q.split(" ");
-    return options.filter((o) => {
+    const hits = options.filter((o) => {
       const hay = norm(`${o.label} ${o.keywords ?? ""}`);
       return words.every((w) => hay.includes(w));
     });
+    // What starts with the typed text comes first: typing "12" puts order 12 above order 312.
+    const starts = (o: SearchableOption) => (norm(o.label).startsWith(q) ? 0 : 1);
+    return hits.slice().sort((x, y) => starts(x) - starts(y));
   }, [options, query]);
 
   // Opening: start on the current choice. Typing: start on the first match.

@@ -5,6 +5,7 @@ import {
   ArrowUpFromLine,
   BarChart3,
   Crosshair,
+  ClipboardList,
   Hourglass,
   Layers,
   Package,
@@ -48,6 +49,7 @@ import { getSelectableMaterialCodes } from "../../constants/materialCodes";
 import truck3 from "@/assets/truck3.png";
 import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import { SearchableSelect } from "../../components/water-system/SearchableSelect";
+import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbridgeOrders";
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
@@ -113,6 +115,9 @@ export default function TruckEntry() {
   const [newTruckId, setNewTruckId] = useState("");
   const [newMaterialCode, setNewMaterialCode] = useState("");
   const [newSiloNo, setNewSiloNo] = useState("");
+  // Weighbridge order (optional): gives the trip its product, client and ordered quantity.
+  const [newOrderNo, setNewOrderNo] = useState("");
+  const [wbOrders, setWbOrders] = useState<WeighbridgeOrder[]>([]);
   const [silos, setSilos] = useState<SilosForMaterial>(NO_SILOS);
   const [silosState, setSilosState] = useState<"idle" | "loading" | "error">("idle");
   const [silosReload, setSilosReload] = useState(0);
@@ -157,6 +162,21 @@ export default function TruckEntry() {
       label: `${t.license}${t.model ? ` — ${t.model}` : ""}`,
     }));
   }, [availableTrucks, truckData, newTruckId]);
+  const orderOptions = useMemo(
+    () => [
+      { value: "", label: "No order" },
+      ...wbOrders
+        .slice()
+        .sort((a, b) => a.order_no - b.order_no)
+        .map((o) => ({
+          value: String(o.order_no),
+          label: `${o.order_no} — ${o.product_code} ${o.product_name} — ${fmtWeight(o.quantity_kg)} kg — ${o.client_name}`,
+        })),
+    ],
+    [wbOrders]
+  );
+  const selectedOrder = wbOrders.find((o) => String(o.order_no) === newOrderNo) ?? null;
+
   const materialOptions = useMemo(
     () => selectableMaterials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
     [selectableMaterials]
@@ -257,6 +277,10 @@ export default function TruckEntry() {
       ]);
       setOpenOrders(open);
       setCompletedToday(today.rows ?? []);
+      // Open weighbridge orders for the Order Number field. The page works without them.
+      fetchWeighbridgeOrders("open", signal)
+        .then((r) => setWbOrders(r.orders))
+        .catch(() => undefined);
       setActiveOrder((prev) => {
         if (!prev) return null;
         return open.find((o) => o.id === prev.id) ?? null;
@@ -383,6 +407,7 @@ export default function TruckEntry() {
     setNewTruckId("");
     setNewMaterialCode("");
     setNewSiloNo("");
+    setNewOrderNo("");
     setNewEntryFormKey((k) => k + 1);
   }
 
@@ -439,7 +464,12 @@ export default function TruckEntry() {
           return;
         }
         try {
-          order = await createTruckWeighOrder(truckId, newMaterialCode, Number(newSiloNo));
+          order = await createTruckWeighOrder(
+            truckId,
+            newMaterialCode,
+            Number(newSiloNo),
+            newOrderNo ? Number(newOrderNo) : null
+          );
         } catch (err: unknown) {
           const conflict = err as Error & { code?: string; orderId?: number };
           if (conflict?.code === "OPEN_ORDER" && conflict.orderId) {
@@ -580,8 +610,31 @@ export default function TruckEntry() {
 
           <div
             key={newEntryFormKey}
-            className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end"
+            className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 items-end"
           >
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Order Number (optional)
+              </label>
+              <SearchableSelect
+                value={newOrderNo}
+                onChange={(v) => {
+                  setNewOrderNo(v);
+                  const o = wbOrders.find((x) => String(x.order_no) === v);
+                  if (o) {
+                    // The order decides the material.
+                    setNewMaterialCode(o.product_code);
+                    setNewSiloNo("");
+                  }
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={orderOptions}
+                placeholder="Type order number"
+                disabled={isExitPhase}
+                icon={<ClipboardList className="h-3.5 w-3.5" />}
+                testId="select-order"
+              />
+            </div>
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                 Select Truck
@@ -614,7 +667,7 @@ export default function TruckEntry() {
                 }}
                 options={materialOptions}
                 placeholder="Select or type material"
-                disabled={isExitPhase}
+                disabled={isExitPhase || Boolean(selectedOrder)}
                 icon={<Package className="h-3.5 w-3.5" />}
                 testId="select-material"
               />
@@ -880,6 +933,25 @@ export default function TruckEntry() {
                 </p>
               )}
 
+              {(activeOrder ? activeOrder.order_no != null : Boolean(selectedOrder)) && (
+                <div className="space-y-1.5" data-testid="entry-order">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                    Order
+                  </label>
+                  <div className="wb-input px-3 py-2 text-sm wb-text space-y-0.5">
+                    <div className="font-semibold">
+                      Order {activeOrder ? activeOrder.order_no : selectedOrder?.order_no}
+                    </div>
+                    <div className="wb-text-sec truncate">
+                      Client: {(activeOrder ? activeOrder.order_client_name : selectedOrder?.client_name) || "—"}
+                    </div>
+                    <div className="wb-text-sec">
+                      Ordered: {fmtWeight(activeOrder ? activeOrder.order_quantity_kg : selectedOrder?.quantity_kg)} kg
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                   Selected Truck
@@ -1010,6 +1082,7 @@ export default function TruckEntry() {
                   {(
                     [
                       "Time",
+                      "Order",
                       "Truck No",
                       "Material",
                       "Silo",
@@ -1050,6 +1123,9 @@ export default function TruckEntry() {
                     >
                       <TableCell className="text-xs tabular-nums wb-text-sec py-2.5">
                         {fmtTime(rowTimestamp(row))}
+                      </TableCell>
+                      <TableCell className="text-sm wb-text-sec py-2.5 tabular-nums">
+                        {row.order_no != null ? row.order_no : "—"}
                       </TableCell>
                       <TableCell className="py-2.5">
                         <button
@@ -1124,7 +1200,7 @@ export default function TruckEntry() {
                 {openTripRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={10}
                       className="text-center py-10 wb-text-muted text-sm"
                     >
                       No open trips — create a new entry above. Finished cycles are on Weighbridge

@@ -266,6 +266,31 @@ def create_order():
 
     if truck_id is None:
         return jsonify({"error": "truck_id is required"}), 400
+
+    # Optional weighbridge order: the trip takes its product, client and quantity from it.
+    wb_order = None
+    raw_order_no = data.get("order_no")
+    if raw_order_no is not None and raw_order_no != "":
+        if isinstance(raw_order_no, bool) or not str(raw_order_no).strip().isdigit():
+            return jsonify({"error": "order_no must be a whole number"}), 400
+        from services import weighbridge_orders as wo
+        try:
+            wb_order = wo.get_by_no(int(str(raw_order_no).strip()))
+        except Exception as e:
+            return jsonify({"error": "Could not load the order", "detail": str(e)}), 500
+        if wb_order is None:
+            return jsonify({"error": f"Order {raw_order_no} not found"}), 400
+        if wb_order["status"] != "open":
+            what = "already closed" if wb_order["status"] == "closed" else "already in use by another truck"
+            return jsonify({"error": f"Order {wb_order['order_no']} is {what}"}), 409
+        if not material_code:
+            material_code = wb_order["product_code"]
+        elif material_code != wb_order["product_code"]:
+            return jsonify({
+                "error": f"Order {wb_order['order_no']} is for product {wb_order['product_code']}, "
+                         f"not {material_code}",
+            }), 400
+
     if not material_code:
         return jsonify({"error": "material_code is required"}), 400
     if not is_valid_material_code(material_code):
@@ -316,6 +341,9 @@ def create_order():
         silo_no=silo_no,
         status="awaiting_first",
         created_at=_utcnow(),
+        wb_order_no=wb_order["order_no"] if wb_order else None,
+        wb_client_name=wb_order["client_name"] if wb_order else None,
+        wb_order_qty_kg=wb_order["quantity_kg"] if wb_order else None,
     )
     try:
         db.session.add(order)
@@ -323,6 +351,21 @@ def create_order():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to create order", "detail": str(e)}), 500
+
+    if wb_order:
+        # Take the order for this trip. If someone else took it a moment ago, undo the trip.
+        from services import weighbridge_orders as wo
+        try:
+            wo.attach(wb_order["order_no"], order.id)
+        except Exception as e:
+            try:
+                db.session.delete(order)
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            code = getattr(e, "code", 500)
+            return jsonify({"error": str(e) if code != 500 else "Could not take the order",
+                            "detail": str(e)}), code
 
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 201
@@ -394,6 +437,14 @@ def save_second_weight(order_id: int):
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to save second weight", "detail": str(e)}), 500
+
+    # The truck has exited: its weighbridge order (if any) is closed. Never fails the trip.
+    if order.wb_order_no is not None:
+        try:
+            from services import weighbridge_orders as wo
+            wo.close(order.id)
+        except Exception:
+            pass
 
     # Trip is committed. Silo stock is best effort and must never fail the trip.
     if order.silo_no is not None and order.stock_status != "applied":
@@ -487,6 +538,14 @@ def delete_order(order_id: int):
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Failed to delete order", "detail": str(e)}), 500
+
+    # A cancelled trip gives its weighbridge order back: it is open again.
+    if order.wb_order_no is not None:
+        try:
+            from services import weighbridge_orders as wo
+            wo.release(order.id)
+        except Exception:
+            pass
 
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 200

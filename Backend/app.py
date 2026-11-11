@@ -33,6 +33,7 @@ from routes.settings_routes import settings_bp
 from routes.client_routes import client_bp
 from routes.truck_entry_routes import truck_entry_bp
 from routes.temp_silo_routes import temp_silo_bp
+from routes.weighbridge_order_routes import weighbridge_order_bp
 from routes.ai_routes import ai_bp
 from routes.live_routes import live_bp
 from routes.pallet_report_routes import pallet_report_bp
@@ -144,6 +145,7 @@ app.register_blueprint(settings_bp)
 app.register_blueprint(client_bp)
 app.register_blueprint(truck_entry_bp)
 app.register_blueprint(temp_silo_bp)
+app.register_blueprint(weighbridge_order_bp)
 app.register_blueprint(ai_bp)
 app.register_blueprint(live_bp)
 app.register_blueprint(pallet_report_bp)
