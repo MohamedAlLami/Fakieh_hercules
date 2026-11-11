@@ -373,7 +373,9 @@ class SiloBlockService:
                 if res["complete"]:
                     # A full pass is the whole truth: it replaces the map.
                     self._map = dict(res["map"])
-                    self._suspects = {}
+                    # A silo the scan could not place keeps its old address on the watch list:
+                    # one cheap read per refresh, and it returns the moment that block is it again.
+                    self._suspects = {k: v for k, v in self._suspects.items() if k not in self._map}
                 else:
                     # The scan was cut short. It may ADD what it found; it must never remove
                     # a silo just because it did not get as far as that silo's block.
