@@ -106,9 +106,23 @@ class DiscoverTests(unittest.TestCase):
                 raise sb.PlcUnavailable("link dropped")
             return plc.read80(db)
 
-        res = sb.discover(flaky, plc.is_longer, KNOWN, first_db=2001, last_db=7000)
+        res = sb.discover(flaky, plc.is_longer, KNOWN, first_db=2001, last_db=7000, pause=0)
         self.assertFalse(res["complete"])
         self.assertEqual(res["map"], {801: 4784, 802: 3737})       # only what it reached
+
+    def test_brief_hiccup_does_not_abort_the_scan(self):
+        plc = site()
+        seen = {}
+
+        def hiccups(db):                     # every block fails once, then answers
+            seen[db] = seen.get(db, 0) + 1
+            if seen[db] == 1:
+                raise sb.PlcUnavailable("blip")
+            return plc.read80(db)
+
+        res = sb.discover(hiccups, plc.is_longer, KNOWN, first_db=2001, last_db=7000, pause=0)
+        self.assertTrue(res["complete"])
+        self.assertEqual(len(res["map"]), 6)
 
     def test_stop_marks_incomplete(self):
         plc = site()
@@ -156,7 +170,7 @@ class ReadWriteTests(unittest.TestCase):
 
     def test_write_lands_on_the_quantity_only(self):
         before = bytes(self.plc.blocks[6202])
-        sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 1152379.25)
+        sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 1152379.25, sleep=lambda s: None)
         after = bytes(self.plc.blocks[6202])
         self.assertEqual(self.plc.writes, [(6202, sb.OFF_QTY, 1152379.25)])
         self.assertEqual(after[:sb.OFF_QTY], before[:sb.OFF_QTY])
@@ -166,7 +180,7 @@ class ReadWriteTests(unittest.TestCase):
     def test_write_refused_when_block_is_another_silo(self):
         self.plc.blocks[6202] = block(102, 10000.0, upper=1e9, lower=-20000.0)
         with self.assertRaises(RuntimeError):
-            sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 5.0)
+            sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 5.0, sleep=lambda s: None)
         self.assertEqual(self.plc.writes, [])
 
     def test_write_refused_for_unknown_silo_and_bad_number(self):
@@ -176,10 +190,26 @@ class ReadWriteTests(unittest.TestCase):
             sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, float("nan"))
         self.assertEqual(self.plc.writes, [])
 
+    def test_value_the_plc_puts_back_is_caught(self):
+        # A PLC program that overrides the quantity: the write lands, then the old value returns.
+        def plc_program_restores(_seconds):
+            struct.pack_into(">f", self.plc.blocks[6202], sb.OFF_QTY, 1124479.25)
+
+        with self.assertRaisesRegex(RuntimeError, "put the old quantity back"):
+            sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 1152379.25,
+                         sleep=plc_program_restores)
+
+    def test_dosing_after_the_write_is_not_a_failure(self):
+        def plant_doses_meanwhile(_seconds):
+            struct.pack_into(">f", self.plc.blocks[6202], sb.OFF_QTY, 1152379.25 - 180.5)
+
+        sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 1152379.25,
+                     sleep=plant_doses_meanwhile)        # no exception
+
     def test_unconfirmed_write_raises(self):
         self.plc.drop_writes = True
         with self.assertRaises(RuntimeError):
-            sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 5.0)
+            sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 5.0, sleep=lambda s: None)
 
 
 class ServiceTests(unittest.TestCase):
