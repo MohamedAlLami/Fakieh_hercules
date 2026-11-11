@@ -47,6 +47,7 @@ import { API_BASE_URL } from "../../config/api";
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
 import truck3 from "@/assets/truck3.png";
 import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
+import { SearchableSelect } from "../../components/water-system/SearchableSelect";
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
@@ -144,6 +145,21 @@ export default function TruckEntry() {
   const availableTrucks = useMemo(
     () => truckData.filter((t) => !busyTruckIds.has(t.id)),
     [truckData, busyTruckIds]
+  );
+
+  // When a trip is open its truck is no longer "available", but the field must still show it.
+  const truckOptions = useMemo(() => {
+    const list = availableTrucks.slice();
+    const current = truckData.find((t) => String(t.id) === newTruckId);
+    if (current && !list.some((t) => t.id === current.id)) list.unshift(current);
+    return list.map((t) => ({
+      value: String(t.id),
+      label: `${t.license}${t.model ? ` — ${t.model}` : ""}`,
+    }));
+  }, [availableTrucks, truckData, newTruckId]);
+  const materialOptions = useMemo(
+    () => selectableMaterials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
+    [selectableMaterials]
   );
 
   const isEntryPhase = activeOrder?.status === "awaiting_first";
@@ -570,68 +586,38 @@ export default function TruckEntry() {
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                 Select Truck
               </label>
-              <Select
-                value={newTruckId || undefined}
-                onValueChange={(v) => {
+              <SearchableSelect
+                value={newTruckId}
+                onChange={(v) => {
                   setNewTruckId(v);
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
+                options={truckOptions}
+                placeholder="Select or type truck plate"
+                emptyText="No free trucks — all have open trips"
                 disabled={isExitPhase}
-              >
-                <SelectTrigger className="wb-input h-12 wb-text">
-                  <SelectValue placeholder="Select truck" />
-                </SelectTrigger>
-                <SelectContent className="wb-select-content wb-text">
-                  {availableTrucks.length === 0 ? (
-                    <div className="px-3 py-2 text-xs wb-text-muted">
-                      No free trucks — all have open trips
-                    </div>
-                  ) : (
-                    availableTrucks.map((truck) => (
-                      <SelectItem key={truck.id} value={String(truck.id)}>
-                        <span className="flex items-center gap-2">
-                          <Truck className="h-3.5 w-3.5 wb-text-cyan shrink-0" />
-                          <span>
-                            {truck.license}
-                            {truck.model ? ` — ${truck.model}` : ""}
-                          </span>
-                        </span>
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
+                icon={<Truck className="h-3.5 w-3.5" />}
+                testId="select-truck"
+              />
             </div>
 
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
                 Select Material
               </label>
-              <Select
-                value={newMaterialCode || undefined}
-                onValueChange={(v) => {
+              <SearchableSelect
+                value={newMaterialCode}
+                onChange={(v) => {
                   setNewMaterialCode(v);
                   setNewSiloNo("");
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
+                options={materialOptions}
+                placeholder="Select or type material"
                 disabled={isExitPhase}
-              >
-                <SelectTrigger className="wb-input h-12 wb-text">
-                  <SelectValue placeholder="Select material" />
-                </SelectTrigger>
-                <SelectContent className="wb-select-content wb-text max-h-60">
-                  {selectableMaterials.map((m) => (
-                    <SelectItem key={m.code} value={m.code}>
-                      <span className="flex items-center gap-2">
-                        <Package className="h-3.5 w-3.5 wb-text-cyan shrink-0" />
-                        <span>
-                          {m.code} — {m.name}
-                        </span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                icon={<Package className="h-3.5 w-3.5" />}
+                testId="select-material"
+              />
             </div>
 
             <div className="space-y-1.5">

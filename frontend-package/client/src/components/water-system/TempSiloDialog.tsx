@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { SearchableSelect } from "./SearchableSelect";
 import { fetchTempSilos, saveTempSilo, type TempSilo } from "../../api/tempSilos";
 
 interface Props {
@@ -37,6 +38,10 @@ function sameCode(a: string, b: string) {
 /** Hand edit of a temporary silo (1001-1200): material and quantity, saved in Hercules only. */
 export function TempSiloDialog({ open, onOpenChange, siloNo, onSaved }: Props) {
   const materials = useMemo(() => getSelectableMaterialCodes(), []);
+  const materialOptions = useMemo(
+    () => materials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
+    [materials]
+  );
   const [silos, setSilos] = useState<TempSilo[]>([]);
   const [picked, setPicked] = useState("");
   const [materialCode, setMaterialCode] = useState("");
@@ -108,7 +113,7 @@ export function TempSiloDialog({ open, onOpenChange, siloNo, onSaved }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
-      <DialogContent className="wb-console wb-panel wb-text sm:max-w-md light:bg-white">
+      <DialogContent className="wb-panel wb-text sm:max-w-md light:bg-white">
         <DialogHeader>
           <DialogTitle className="wb-text">
             {siloNo != null ? `Temporary silo ${siloNo}` : "Temporary silos"}
@@ -126,7 +131,7 @@ export function TempSiloDialog({ open, onOpenChange, siloNo, onSaved }: Props) {
                 <SelectTrigger className="wb-input h-11 wb-text" data-testid="temp-silo-pick">
                   <SelectValue placeholder="Select temporary silo" />
                 </SelectTrigger>
-                <SelectContent className="wb-console wb-select-content wb-text max-h-60">
+                <SelectContent className="wb-select-content wb-text max-h-60">
                   {silos.map((s) => (
                     <SelectItem key={s.siloNo} value={String(s.siloNo)}>
                       {s.materialCode
@@ -150,22 +155,14 @@ export function TempSiloDialog({ open, onOpenChange, siloNo, onSaved }: Props) {
 
           <div className="space-y-1.5">
             <label className="text-[10px] uppercase tracking-wider wb-text-sec">Material</label>
-            <Select
-              value={materialCode || undefined}
-              onValueChange={setMaterialCode}
+            <SearchableSelect
+              value={materialCode}
+              onChange={setMaterialCode}
+              options={materialOptions}
+              placeholder="Select or type material"
               disabled={busy || !current}
-            >
-              <SelectTrigger className="wb-input h-11 wb-text" data-testid="temp-silo-material">
-                <SelectValue placeholder="Select material" />
-              </SelectTrigger>
-              <SelectContent className="wb-console wb-select-content wb-text max-h-60">
-                {materials.map((m) => (
-                  <SelectItem key={m.code} value={m.code}>
-                    {m.code} — {m.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              testId="temp-silo-material"
+            />
           </div>
 
           <div className="space-y-1.5">
