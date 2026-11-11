@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services import silo_blocks as sb  # noqa: E402
 
 
+
 def block(silo, qty, upper=45000.0, lower=-5000.0, length=80, extra_ints=()):
     b = bytearray(length)
     struct.pack_into(">h", b, sb.OFF_SILO, silo)
@@ -61,6 +62,10 @@ def site():
 KNOWN = [101, 201, 314, 801, 802, 841, 848]
 
 
+def plc_down(db):
+    raise sb.PlcUnavailable("link down")
+
+
 class ParseTests(unittest.TestCase):
     def test_reads_fields(self):
         blk = sb.parse_block(bytes(block(841, 20000.0)))
@@ -93,6 +98,18 @@ class DiscoverTests(unittest.TestCase):
         self.assertNotIn(841, res["map"])
         self.assertEqual(res["ambiguous"], {841: [5000, 6459]})
 
+    def test_link_drop_mid_scan_is_incomplete_not_empty(self):
+        plc = site()
+
+        def flaky(db):
+            if db > 5000:
+                raise sb.PlcUnavailable("link dropped")
+            return plc.read80(db)
+
+        res = sb.discover(flaky, plc.is_longer, KNOWN, first_db=2001, last_db=7000)
+        self.assertFalse(res["complete"])
+        self.assertEqual(res["map"], {801: 4784, 802: 3737})       # only what it reached
+
     def test_stop_marks_incomplete(self):
         plc = site()
         res = sb.discover(plc.read80, plc.is_longer, KNOWN, first_db=2001, last_db=7000,
@@ -117,17 +134,22 @@ class ReadWriteTests(unittest.TestCase):
         self.assertEqual(stale, [841])
         self.assertIsNone(sb.read_one(self.plc.read80, self.map, 841))
 
-    def test_unreadable_block_is_not_called_stale(self):
-        down = lambda db: None                          # PLC down or a dropped packet
-        qty, stale = sb.read_quantities(down, self.map)
+    def test_unreachable_plc_is_not_called_stale(self):
+        qty, stale = sb.read_quantities(plc_down, self.map)
         self.assertEqual((qty, stale), ({}, []))
+
+    def test_block_the_plc_says_is_gone_is_stale(self):
+        del self.plc.blocks[6459]
+        qty, stale = sb.read_quantities(self.plc.read80, self.map)
+        self.assertNotIn(841, qty)
+        self.assertEqual(stale, [841])
 
     def test_checked_read_names_the_reason(self):
         self.assertEqual(sb.read_one_checked(self.plc.read80, self.map, 841), 20000.0)
         with self.assertRaisesRegex(sb.SiloBlockError, "no known PLC block"):
             sb.read_one_checked(self.plc.read80, self.map, 999)
         with self.assertRaisesRegex(sb.SiloBlockError, "not reachable"):
-            sb.read_one_checked(lambda db: None, self.map, 841)
+            sb.read_one_checked(plc_down, self.map, 841)
         self.plc.blocks[6459] = block(840, 77.0)
         with self.assertRaisesRegex(sb.SiloBlockError, "no longer belongs to silo 841"):
             sb.read_one_checked(self.plc.read80, self.map, 841)
@@ -181,7 +203,7 @@ class ServiceTests(unittest.TestCase):
             path = os.path.join(d, "map.json")
             sb.save_map({801: 4784, 841: 6459}, path)
             alive = {"up": True}
-            svc = sb.SiloBlockService(lambda db: plc.read80(db) if alive["up"] else None,
+            svc = sb.SiloBlockService(lambda db: plc.read80(db) if alive["up"] else plc_down(db),
                                       plc.is_longer, lambda: KNOWN, path)
             svc._last_scan = 1e18
             self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})
@@ -191,6 +213,49 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(svc.mapping(), {801: 4784, 841: 6459})   # nothing dropped
             alive["up"] = True
             self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})   # back at once
+
+    def test_interrupted_rescan_never_shrinks_the_map(self):
+        plc = site()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            full = {801: 4784, 802: 3737, 841: 6459, 101: 6202, 314: 6232, 201: 6217}
+            sb.save_map(full, path)
+
+            def flaky(db):                       # the link dies part-way through the scan
+                if db > 5000:
+                    raise sb.PlcUnavailable("link dropped")
+                return plc.read80(db)
+
+            svc = sb.SiloBlockService(flaky, plc.is_longer, lambda: KNOWN, path)
+            svc._rescan()
+            self.assertEqual(svc.mapping(), full)                 # nothing lost
+            self.assertEqual(sb.load_map(path), full)             # and nothing lost on disk
+
+    def test_complete_rescan_replaces_the_map(self):
+        plc = site()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            sb.save_map({801: 9999, 555: 2502}, path)             # an out-of-date map
+            svc = sb.SiloBlockService(plc.read80, plc.is_longer, lambda: KNOWN, path)
+            svc._scan_range = (2001, 7000)
+            svc._rescan()
+            self.assertEqual(svc.mapping(),
+                             {801: 4784, 802: 3737, 841: 6459, 101: 6202, 314: 6232, 201: 6217})
+
+    def test_silo_whose_block_matches_again_comes_back_by_itself(self):
+        plc = site()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            sb.save_map({801: 4784, 841: 6459}, path)
+            svc = sb.SiloBlockService(plc.read80, plc.is_longer, lambda: KNOWN, path)
+            svc._last_scan = 1e18                                 # no background scan here
+            good = bytes(plc.blocks[6459])
+            plc.blocks[6459] = block(840, 77.0)
+            self.assertEqual(svc.quantities(), {801: 45000.0})
+            plc.blocks[6459] = bytearray(good)                    # the block is silo 841 again
+            svc.invalidate()
+            self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})
+            self.assertEqual(svc.mapping(), {801: 4784, 841: 6459})
 
     def test_missing_map_file_is_empty(self):
         self.assertEqual(sb.load_map(os.path.join(tempfile.gettempdir(), "no-such-map-xyz.json")), {})

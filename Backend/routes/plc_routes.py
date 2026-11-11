@@ -558,14 +558,20 @@ def fetch_silo_qty_from_plc() -> Dict[int, float]:
 
 
 def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
-    """Uncached read of part of a data block. None when the PLC or the block is not readable."""
+    """Uncached read of part of a data block.
+
+    Returns None when the PLC answers that the block (or that part of it) does not exist.
+    Raises services.silo_blocks.PlcUnavailable when the PLC could not be asked at all, so that
+    "could not ask" is never mistaken for "does not exist".
+    """
     global CLIENT
+    from services.silo_blocks import PlcUnavailable
     if DEMO_MODE or not _snap7_loaded:
-        return None
+        raise PlcUnavailable("PLC access is off (demo mode or snap7 missing)")
     for attempt in (1, 2):
         cli = ensure_client()
         if cli is None:
-            return None
+            raise PlcUnavailable("no PLC connection")
         try:
             with CLIENT_LOCK:
                 return bytes(cli.db_read(db_no, start, size))
@@ -576,7 +582,8 @@ def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
             if "out of range" in msg or "not available" in msg or "does not exist" in msg:
                 return None
             CLIENT = None
-    return None
+            last_error = e
+    raise PlcUnavailable(f"PLC read failed: {last_error}")
 
 
 _SILO_BLOCK_SERVICE = None

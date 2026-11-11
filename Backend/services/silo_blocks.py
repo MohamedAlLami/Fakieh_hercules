@@ -42,8 +42,16 @@ QTY_CACHE_SECONDS = 10.0
 REDISCOVER_MIN_INTERVAL = 900.0
 READBACK_TOLERANCE_KG = 0.01
 
-Read80 = Callable[[int], Optional[bytes]]      # db_no -> first 80 bytes, or None if unreadable
+Read80 = Callable[[int], Optional[bytes]]      # db_no -> first 80 bytes; None = no such block
 IsLonger = Callable[[int], bool]               # db_no -> True when byte 80 is readable
+
+
+class PlcUnavailable(RuntimeError):
+    """The PLC could not be asked at all (link down, timeout).
+
+    Read80 / IsLonger raise this instead of returning None, because "I could not ask" must never
+    be mistaken for "the PLC says this block does not exist".
+    """
 
 
 def parse_block(data: Optional[bytes]) -> Optional[dict]:
@@ -80,15 +88,19 @@ def discover(read80: Read80, is_longer: IsLonger, known_silos: Iterable[int],
         if should_stop is not None and should_stop():
             complete = False
             break
-        data = read80(db)
-        if data is None:
-            continue
-        scanned += 1
-        blk = parse_block(data)
-        if blk is None or blk["silo_no"] not in known:
-            continue
-        if is_longer(db):          # same header but not an 80-byte block: a different kind of block
-            continue
+        try:
+            data = read80(db)
+            if data is None:
+                continue
+            scanned += 1
+            blk = parse_block(data)
+            if blk is None or blk["silo_no"] not in known:
+                continue
+            if is_longer(db):      # same header but not an 80-byte block: a different kind of block
+                continue
+        except PlcUnavailable:
+            complete = False       # the link dropped mid-scan: what we have is only part of the picture
+            break
         found.setdefault(blk["silo_no"], []).append(db)
     mapping = {s: dbs[0] for s, dbs in found.items() if len(dbs) == 1}
     ambiguous = {s: dbs for s, dbs in found.items() if len(dbs) > 1}
@@ -98,15 +110,19 @@ def discover(read80: Read80, is_longer: IsLonger, known_silos: Iterable[int],
 def read_quantities(read80: Read80, mapping: Dict[int, int]) -> Tuple[Dict[int, float], List[int]]:
     """Read every mapped silo. Returns ({silo: kg}, [silos whose block no longer matches]).
 
-    A block that could not be READ (PLC down, a dropped packet) is simply absent from the result:
-    that says nothing about the map, so it is not reported as stale. Stale means the block was
-    read and carries a different silo number, or is no longer a silo block at all.
+    When the PLC cannot be reached (read80 raises PlcUnavailable) the silo is simply absent from
+    the result: that says nothing about the map, so it is not reported as stale. Stale means the
+    PLC answered and the block is gone, carries another silo number, or is not a silo block.
     """
     out: Dict[int, float] = {}
     stale: List[int] = []
     for silo, db in mapping.items():
-        data = read80(db)
+        try:
+            data = read80(db)
+        except PlcUnavailable:
+            break                  # link is down: stop asking, report what was read so far
         if data is None:
+            stale.append(int(silo))    # the PLC answered: that block is gone
             continue
         blk = parse_block(data)
         if blk is None or blk["silo_no"] != int(silo):
@@ -125,8 +141,9 @@ def read_one_checked(read80: Read80, mapping: Dict[int, int], silo_no: int) -> f
     db = mapping.get(int(silo_no))
     if db is None:
         raise SiloBlockError("silo has no known PLC block")
-    data = read80(db)
-    if data is None:
+    try:
+        data = read80(db)
+    except PlcUnavailable:
         raise SiloBlockError("PLC not reachable")
     blk = parse_block(data)
     if blk is None or blk["silo_no"] != int(silo_no):
@@ -139,7 +156,10 @@ def read_one(read80: Read80, mapping: Dict[int, int], silo_no: int) -> Optional[
     db = mapping.get(int(silo_no))
     if db is None:
         return None
-    blk = parse_block(read80(db))
+    try:
+        blk = parse_block(read80(db))
+    except PlcUnavailable:
+        return None
     if blk is None or blk["silo_no"] != int(silo_no):
         return None
     return float(blk["quantity_kg"])
@@ -223,6 +243,10 @@ class SiloBlockService:
         self._cache_at = 0.0
         self._last_scan = 0.0
         self._scanning = False
+        # silo -> block it used to live in. Checked again on every refresh, so a silo whose block
+        # reappears (a PLC download that was rolled back, a transient glitch) comes straight back.
+        self._suspects: Dict[int, int] = {}
+        self._scan_range = (SCAN_FIRST_DB, SCAN_LAST_DB)
 
     def mapping(self) -> Dict[int, int]:
         with self._lock:
@@ -239,14 +263,33 @@ class SiloBlockService:
             return {}
         qty, stale = read_quantities(self._read80, mapping)
         with self._lock:
+            suspects = dict(self._suspects)
+        if suspects:
+            back, _still = read_quantities(self._read80, suspects)
+            if back:
+                qty.update(back)
+                with self._lock:
+                    for s in back:
+                        self._map[s] = self._suspects.pop(s)
+                print(f"[SILO-BLOCKS] {len(back)} silo block(s) match again: {sorted(back)[:8]}")
+                self._save()
+        with self._lock:
             if qty or stale:      # nothing read at all (PLC down): do not cache an empty answer
                 self._cache, self._cache_at = dict(qty), time.time()
         if stale:
             with self._lock:
                 for s in stale:
-                    self._map.pop(s, None)
+                    db = self._map.pop(s, None)
+                    if db is not None:
+                        self._suspects[s] = db
             self._maybe_rescan(f"{len(stale)} silo block(s) no longer match: {stale[:8]}")
         return qty
+
+    def _save(self) -> None:
+        try:
+            save_map(self.mapping(), self._path)
+        except Exception as e:
+            print(f"[SILO-BLOCKS] could not save the map file: {e}")
 
     def read_fresh(self, silo_no: int) -> Optional[float]:
         return read_one(self._read80, self.mapping(), silo_no)
@@ -271,19 +314,28 @@ class SiloBlockService:
     def _rescan(self) -> None:
         try:
             known = list(self._known_silos())
-            res = discover(self._read80, self._is_longer, known)
+            res = discover(self._read80, self._is_longer, known,
+                           first_db=self._scan_range[0], last_db=self._scan_range[1])
             if res["scanned"] == 0:
                 print("[SILO-BLOCKS] scan read no blocks (PLC unreachable?); keeping the current map")
                 return
             with self._lock:
-                self._map = dict(res["map"])
+                if res["complete"]:
+                    # A full pass is the whole truth: it replaces the map.
+                    self._map = dict(res["map"])
+                    self._suspects = {}
+                else:
+                    # The scan was cut short. It may ADD what it found; it must never remove
+                    # a silo just because it did not get as far as that silo's block.
+                    for silo, db in res["map"].items():
+                        self._map[silo] = db
+                        self._suspects.pop(silo, None)
+                    self._last_scan = 0.0      # allow a fresh attempt soon
                 self._cache_at = 0.0
-            try:
-                save_map(res["map"], self._path)
-            except Exception as e:
-                print(f"[SILO-BLOCKS] could not save the map file: {e}")
-            print(f"[SILO-BLOCKS] scan done: {len(res['map'])} silos mapped, "
-                  f"{len(res['ambiguous'])} ambiguous, {res['scanned']} blocks read")
+                mapped = len(self._map)
+            self._save()
+            print(f"[SILO-BLOCKS] scan {'done' if res['complete'] else 'INTERRUPTED (kept the previous map, added what was found)'}: "
+                  f"{mapped} silos mapped, {len(res['ambiguous'])} ambiguous, {res['scanned']} blocks read")
         except Exception as e:
             print(f"[SILO-BLOCKS] scan failed: {e}")
         finally:
