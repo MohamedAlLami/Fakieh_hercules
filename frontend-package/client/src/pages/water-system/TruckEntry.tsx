@@ -18,7 +18,9 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -49,10 +51,13 @@ import {
   fetchCompletedToday,
   fetchOpenOrders,
   fetchScaleLive,
+  fetchSilosForMaterial,
   fetchTruckWeighOrder,
   saveFirstWeight,
   saveSecondWeight,
   type ScaleLiveReading,
+  type SilosForMaterial,
+  type SiloOption,
   type TruckWeighOrder,
 } from "../../api/truckEntry";
 
@@ -81,6 +86,11 @@ function fmtWeight(kg: number | null | undefined) {
   return kg.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 }
 
+function siloLabel(s: SiloOption) {
+  const name = s.materialName ? ` — ${s.materialName}` : "";
+  return `Silo ${s.siloNo}${name} — ${fmtWeight(s.quantityKg)} kg`;
+}
+
 function rowTimestamp(o: TruckWeighOrder) {
   return o.second_ts || o.first_ts || o.created_at || "";
 }
@@ -97,6 +107,9 @@ export default function TruckEntry() {
 
   const [newTruckId, setNewTruckId] = useState("");
   const [newMaterialCode, setNewMaterialCode] = useState("");
+  const [newSiloNo, setNewSiloNo] = useState("");
+  const [silos, setSilos] = useState<SilosForMaterial>({ matching: [], unassigned: [] });
+  const [silosState, setSilosState] = useState<"idle" | "loading" | "error">("idle");
   const [newEntryFormKey, setNewEntryFormKey] = useState(0);
 
   const [liveReading, setLiveReading] = useState<ScaleLiveReading | null>(null);
@@ -132,6 +145,31 @@ export default function TruckEntry() {
 
   const selectedTruck = truckData.find((t) => String(t.id) === newTruckId);
   const selectedMaterial = selectableMaterials.find((m) => m.code === newMaterialCode);
+  const selectedSilo = [...silos.matching, ...silos.unassigned].find(
+    (s) => String(s.siloNo) === newSiloNo
+  );
+
+  // Silo choices follow the chosen material.
+  useEffect(() => {
+    if (!newMaterialCode) {
+      setSilos({ matching: [], unassigned: [] });
+      setSilosState("idle");
+      return;
+    }
+    const ctrl = new AbortController();
+    setSilosState("loading");
+    fetchSilosForMaterial(newMaterialCode, ctrl.signal)
+      .then((r) => {
+        setSilos(r);
+        setSilosState("idle");
+      })
+      .catch((err: unknown) => {
+        if ((err as Error)?.name === "AbortError") return;
+        setSilos({ matching: [], unassigned: [] });
+        setSilosState("error");
+      });
+    return () => ctrl.abort();
+  }, [newMaterialCode]);
 
   /** New entry ready: truck + material chosen — live Scale 1 before capture */
   const readyForNewEntry = Boolean(newTruckId && newMaterialCode) && !isExitPhase;
@@ -317,6 +355,7 @@ export default function TruckEntry() {
   function resetNewEntryForm() {
     setNewTruckId("");
     setNewMaterialCode("");
+    setNewSiloNo("");
     setNewEntryFormKey((k) => k + 1);
   }
 
@@ -367,8 +406,13 @@ export default function TruckEntry() {
           setLoading(false);
           return;
         }
+        if (!newSiloNo) {
+          setErrorMsg("Select a silo.");
+          setLoading(false);
+          return;
+        }
         try {
-          order = await createTruckWeighOrder(truckId, newMaterialCode);
+          order = await createTruckWeighOrder(truckId, newMaterialCode, Number(newSiloNo));
         } catch (err: unknown) {
           const conflict = err as Error & { code?: string; orderId?: number };
           if (conflict?.code === "OPEN_ORDER" && conflict.orderId) {
@@ -498,7 +542,7 @@ export default function TruckEntry() {
 
           <div
             key={newEntryFormKey}
-            className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end"
+            className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end"
           >
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
@@ -545,6 +589,7 @@ export default function TruckEntry() {
                 value={newMaterialCode || undefined}
                 onValueChange={(v) => {
                   setNewMaterialCode(v);
+                  setNewSiloNo("");
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
                 disabled={isExitPhase}
@@ -563,6 +608,61 @@ export default function TruckEntry() {
                       </span>
                     </SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Select Silo
+              </label>
+              <Select
+                value={newSiloNo || undefined}
+                onValueChange={(v) => {
+                  setNewSiloNo(v);
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                disabled={isExitPhase || !newMaterialCode}
+              >
+                <SelectTrigger className="wb-input h-12 wb-text">
+                  <SelectValue placeholder={newMaterialCode ? "Select silo" : "Select material first"} />
+                </SelectTrigger>
+                <SelectContent className="wb-select-content wb-text max-h-60">
+                  {silosState === "loading" && (
+                    <div className="px-3 py-2 text-xs wb-text-muted">Loading silos…</div>
+                  )}
+                  {silosState === "error" && (
+                    <div className="px-3 py-2 text-xs wb-text-muted">Could not load silos</div>
+                  )}
+                  {silosState === "idle" &&
+                    silos.matching.length === 0 &&
+                    silos.unassigned.length === 0 && (
+                      <div className="px-3 py-2 text-xs wb-text-muted">No suitable silos</div>
+                    )}
+                  {silos.matching.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Silos holding this material
+                      </SelectLabel>
+                      {silos.matching.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.unassigned.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Unassigned silos
+                      </SelectLabel>
+                      {silos.unassigned.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -776,6 +876,21 @@ export default function TruckEntry() {
                 </div>
               </div>
 
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                  Selected Silo
+                </label>
+                <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                  {activeOrder
+                    ? activeOrder.silo_no != null
+                      ? `Silo ${activeOrder.silo_no}`
+                      : "—"
+                    : selectedSilo
+                      ? siloLabel(selectedSilo)
+                      : "—"}
+                </div>
+              </div>
+
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <div className="inline-flex rounded-md border wb-border overflow-hidden p-0.5 wb-stage">
                   <span
@@ -863,6 +978,7 @@ export default function TruckEntry() {
                       "Time",
                       "Truck No",
                       "Material",
+                      "Silo",
                       "Type",
                       "Entry Weight",
                       "Exit Weight",
@@ -914,6 +1030,9 @@ export default function TruckEntry() {
                       </TableCell>
                       <TableCell className="text-sm wb-text py-2.5 max-w-[160px] truncate">
                         {row.material_name ?? row.material_code}
+                      </TableCell>
+                      <TableCell className="text-sm wb-text-sec py-2.5">
+                        {row.silo_no != null ? `Silo ${row.silo_no}` : "—"}
                       </TableCell>
                       <TableCell className="py-2.5">
                         <span
@@ -971,7 +1090,7 @@ export default function TruckEntry() {
                 {openTripRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={8}
+                      colSpan={9}
                       className="text-center py-10 wb-text-muted text-sm"
                     >
                       No open trips — create a new entry above. Finished cycles are on Weighbridge

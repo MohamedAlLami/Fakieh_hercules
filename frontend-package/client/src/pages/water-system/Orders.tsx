@@ -19,7 +19,7 @@ import {
   formatDestSelLabel,
   isOutloadingHighSilo,
 } from '../../utils/outloadingSilos'
-import { MATERIAL_CODES, getMaterialNameFromCode } from '../../constants/materialCodes'
+import { getSelectableMaterialCodes, getMaterialNameFromCode } from '../../constants/materialCodes'
 import { RfidAssignModal, orderRefLabelFromActiveTab } from '../../components/water-system/RfidAssignModal'
 
 const baseUrl = API_BASE_URL
@@ -49,15 +49,18 @@ const ColGroup = ({ widths }: { widths: string[] }) => (
   </colgroup>
 );
 
-const TRUCK_CLIENT_FIELDS = [
-  { name: 'truckId', label: 'Truck', type: 'select' as const },
-  { name: 'clientId', label: 'Client Name', type: 'select' as const },
-];
-
-const orderMetaFields = (item: any) => ({
-  truck_id: item.truckId ? Number(item.truckId) : null,
-  client_id: item.clientId ? Number(item.clientId) : null,
+// Truck and client are no longer chosen on the order form; the backend accepts null for both.
+const orderMetaFields = () => ({
+  truck_id: null,
+  client_id: null,
 });
+
+// Compare material codes ignoring leading zeros ("012" == "12"); empty never matches.
+const normalizeMaterialCode = (code: unknown) => String(code ?? '').trim().replace(/^0+(?=\d)/, '');
+const sameMaterialCode = (a: unknown, b: unknown) => {
+  const x = normalizeMaterialCode(a);
+  return x !== '' && x === normalizeMaterialCode(b);
+};
 
 const plcEndpointFor = (orderType: OrderType, line?: number, isMineralOrder: boolean = false) => {
   if (orderType === 'intake') {
@@ -92,7 +95,7 @@ const payloadFor = (orderType: OrderType, item: any) => {
     } else if (item.destSel !== undefined && item.destSel !== null) {
       p.dest_sel = toNum(item.destSel);
     }
-    return { ...p, ...orderMetaFields(item) };
+    return { ...p, ...orderMetaFields() };
   }
   if (orderType === 'bulk') {
     return {
@@ -102,7 +105,7 @@ const payloadFor = (orderType: OrderType, item: any) => {
       cc25_sel: toNum(item.cc25Sel),
       declared_qty_kg: toNum(item.declaredQuantityKG),
       scale_sel: toNum(item.scaleSel),
-      ...orderMetaFields(item),
+      ...orderMetaFields(),
     };
   }
   if (orderType === 'pit') {
@@ -118,7 +121,7 @@ const payloadFor = (orderType: OrderType, item: any) => {
       dest2: toNum(item.destinationSilo2),
       declared_qty_kg: toNum(item.declaredQuantityKG),
       scale_sel: toNum(item.scaleSel),
-      ...orderMetaFields(item),
+      ...orderMetaFields(),
     };
   }
 };
@@ -220,7 +223,7 @@ export function Orders() {
   useSilosPolling(15000);
   const { toast } = useToast();
   
-  const materialCodes = MATERIAL_CODES;
+  const materialCodes = getSelectableMaterialCodes().slice().sort((a, b) => Number(a.code) - Number(b.code));
   
   // Helper function to get material name for a silo number
   const getMaterialNameForSilo = (siloNumber: string | number) => {
@@ -462,7 +465,6 @@ export function Orders() {
   const [rfidConfigs, setRfidConfigs] = useState<any[]>([])
   const [queueItems, setQueueItems] = useState<any[]>([])
   const [trucks, setTrucks] = useState<Array<{ id: number; license: string; model: string }>>([])
-  const [clients, setClients] = useState<Array<{ id: number; name: string; phone: string }>>([])
   
   // Note: Pagination removed since we're getting live PLC data
 
@@ -549,18 +551,6 @@ export function Orders() {
       setTrucks(Array.isArray(body) ? body : body?.items ?? [])
     } catch (error) {
       setTrucks([])
-    }
-  }, [])
-
-  const fetchClients = useCallback(async () => {
-    try {
-      const response = await axios.get(`${baseUrl}/clients/`, {
-        params: { limit: 2000, offset: 0 },
-      })
-      const body = response.data
-      setClients(Array.isArray(body) ? body : body?.items ?? [])
-    } catch (error) {
-      setClients([])
     }
   }, [])
 
@@ -703,7 +693,6 @@ export function Orders() {
     fetchBinMaterials()
     fetchRfidConfigs()
     fetchTrucks()
-    fetchClients()
   }, [])
 
   // Live PLC status + queue. usePolling runs this immediately, then every 5s,
@@ -919,7 +908,6 @@ export function Orders() {
       case 'intake-line-2':
       case 'mineral-intake':
         return [
-          ...TRUCK_CLIENT_FIELDS,
           { name: 'badgeNo', label: 'RFID', type: 'select' },
           { name: 'sourceMaterialCode', label: 'Source Material Code', type: 'select' },
           { name: 'declaredQuantityKG', label: 'Declared Quantity (KG)', type: 'number' },
@@ -931,7 +919,6 @@ export function Orders() {
       case 'outloading-2':
       case 'outloading-3':
         return [
-          ...TRUCK_CLIENT_FIELDS,
           { name: 'badgeNo', label: 'RFID', type: 'select' },
           { name: 'sourceMaterialCode', label: 'Source Material Code', type: 'select' },
           { name: 'destSel', label: 'Destination (Bulk / Packing)', type: 'select' },
@@ -941,7 +928,6 @@ export function Orders() {
         ]
       case 'bulk-line':
         return [
-          ...TRUCK_CLIENT_FIELDS,
           { name: 'sourceSilo', label: 'Source Silo (With Material)', type: 'select' },
           { name: 'destinationSilo1', label: 'Destination 1 (Available Only)', type: 'select' },
           { name: 'destinationSilo2', label: 'Destination 2 (Available Only)', type: 'select' },
@@ -951,7 +937,6 @@ export function Orders() {
         ]
       case 'pt-line':
         return [
-          ...TRUCK_CLIENT_FIELDS,
           { name: 'pitNo', label: 'Pit Number', type: 'text' },
           { name: 'rawCode', label: 'Raw Material Code', type: 'select' },
           { name: 'destinationSilo1', label: 'Destination 1 (Available Only)', type: 'select' },
@@ -1572,23 +1557,6 @@ export function Orders() {
                         }
                       });
 
-                      if (!newOrder.truckId) {
-                        toast({
-                          title: 'Truck required',
-                          description: 'Please select a truck for this order.',
-                          variant: 'destructive',
-                        });
-                        return;
-                      }
-                      if (!newOrder.clientId) {
-                        toast({
-                          title: 'Client required',
-                          description: 'Please select a client for this order.',
-                          variant: 'destructive',
-                        });
-                        return;
-                      }
-
                       let orderType: OrderType;
                       let line: number | undefined;
                       
@@ -1741,23 +1709,11 @@ export function Orders() {
                           <SelectTrigger className="bg-slate-800/70 light:bg-white border-slate-600 light:border-gray-200 text-white light:text-gray-900 w-full h-8 text-sm">
                             <SelectValue placeholder={`Select ${field.label}`} />
                           </SelectTrigger>
-                          <SelectContent className="bg-slate-800 light:bg-white border-slate-600 light:border-gray-200">
-                            {field.name !== 'destSel' && field.name !== 'truckId' && field.name !== 'clientId' && (
+                          <SelectContent className="bg-slate-800 light:bg-white border-slate-600 light:border-gray-200 max-h-72">
+                            {field.name !== 'destSel' && (
                               <SelectItem value="none">None</SelectItem>
                             )}
-                            {field.name === 'truckId' ? (
-                              trucks.map((truck) => (
-                                <SelectItem key={truck.id} value={String(truck.id)}>
-                                  {truck.license} — {truck.model}
-                                </SelectItem>
-                              ))
-                            ) : field.name === 'clientId' ? (
-                              clients.map((client) => (
-                                <SelectItem key={client.id} value={String(client.id)}>
-                                  {client.name}
-                                </SelectItem>
-                              ))
-                            ) : field.name === 'badgeNo' ? (
+                            {field.name === 'badgeNo' ? (
                               // Only available RFID tags: not locked in the queue and not
                               // currently loaded on a live PLC order.
                               (() => {
@@ -1879,9 +1835,9 @@ export function Orders() {
                                         const sourceMaterialName = materialCodeStr.includes(' - ') ? materialCodeStr.split(' - ')[1] : materialCodeStr;
                                         
                                         // Check if destination silo matches source material (multiple ways to match)
-                                        materialMatches = Boolean(silo.material_code === sourceMaterialCode ||
+                                        materialMatches = Boolean(sameMaterialCode(silo.material_code, sourceMaterialCode) ||
                                                         silo.material_name === sourceMaterialName ||
-                                                        silo.material_code === materialCodeStr ||
+                                                        sameMaterialCode(silo.material_code, materialCodeStr) ||
                                                         silo.material_name === materialCodeStr ||
                                                         // Also check if material names contain the same key words
                                                         (sourceMaterialName && silo.material_name && 
@@ -1900,11 +1856,11 @@ export function Orders() {
                                                           materialCodeStr === '' ||
                                                           materialCodeStr === 'None' ||
                                                           materialCodeStr === 'None - None' ||
-                                                          silo.material_code === materialCodeStr ||
+                                                          sameMaterialCode(silo.material_code, materialCodeStr) ||
                                                           silo.material_name === materialCodeStr ||
                                                           // Extract just the code part from "210 - Soya Oil" format
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                                           silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                                           sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                                           // Also check if silo material matches the full display text
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                            silo.material_name === materialCodeStr.split(' - ')[1]));
@@ -1945,11 +1901,11 @@ export function Orders() {
                                                           materialCodeStr === '' ||
                                                           materialCodeStr === 'None' ||
                                                           materialCodeStr === 'None - None' ||
-                                                          silo.material_code === formData.sourceMaterialCode ||
+                                                          sameMaterialCode(silo.material_code, formData.sourceMaterialCode) ||
                                                           silo.material_name === formData.sourceMaterialCode ||
                                                           // Extract just the code part from "210 - Soya Oil" format
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                                           silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                                           sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                                           // Also check if silo material matches the full display text
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                            silo.material_name === materialCodeStr.split(' - ')[1]);
@@ -1972,11 +1928,11 @@ export function Orders() {
                                                           materialCodeStr === '' ||
                                                           materialCodeStr === 'None' ||
                                                           materialCodeStr === 'None - None' ||
-                                                          silo.material_code === formData.sourceMaterialCode ||
+                                                          sameMaterialCode(silo.material_code, formData.sourceMaterialCode) ||
                                                           silo.material_name === formData.sourceMaterialCode ||
                                                           // Extract just the code part from "210 - Soya Oil" format
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                                           silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                                           sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                                           // Also check if silo material matches the full display text
                                                           (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                            silo.material_name === materialCodeStr.split(' - ')[1]);
@@ -2101,11 +2057,11 @@ export function Orders() {
                                               materialCodeStr === '' ||
                                               materialCodeStr === 'None' ||
                                               materialCodeStr === 'None - None' ||
-                                              silo.material_code === formData.rawCode ||
+                                              sameMaterialCode(silo.material_code, formData.rawCode) ||
                                               silo.material_name === formData.rawCode ||
                                               // Extract just the code part from "210 - Soya Oil" format
                                               (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                               silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                               sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                               // Also check if silo material matches the full display text
                                               (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                silo.material_name === materialCodeStr.split(' - ')[1]);
@@ -2124,11 +2080,11 @@ export function Orders() {
                                             materialCodeStr === '' ||
                                             materialCodeStr === 'None' ||
                                               materialCodeStr === 'None - None' ||
-                                            silo.material_code === formData.sourceMaterialCode ||
+                                            sameMaterialCode(silo.material_code, formData.sourceMaterialCode) ||
                                             silo.material_name === formData.sourceMaterialCode ||
                                             // Extract just the code part from "210 - Soya Oil" format
                                             (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                             silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                             sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                             // Also check if silo material matches the full display text
                                             (materialCodeStr && materialCodeStr.includes(' - ') && 
                                              silo.material_name === materialCodeStr.split(' - ')[1]);
@@ -2341,11 +2297,11 @@ export function Orders() {
                                                 materialCodeStr === '' ||
                                                 materialCodeStr === 'None' ||
                                                 materialCodeStr === 'None - None' ||
-                                                silo.material_code === editFormData.sourceMaterialCode ||
+                                                sameMaterialCode(silo.material_code, editFormData.sourceMaterialCode) ||
                                                 silo.material_name === editFormData.sourceMaterialCode ||
                                                 // Extract just the code part from "210 - Soya Oil" format
                                                 (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                                 silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                                 sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                                 // Also check if silo material matches the full display text
                                                 (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                  silo.material_name === materialCodeStr.split(' - ')[1]);
@@ -2435,11 +2391,11 @@ export function Orders() {
                           if (activeTab === 'bulk-line') {
                             // For bulk orders, be strict - only show silos with matching material
                             if (materialCodeStr && materialCodeStr !== '' && materialCodeStr !== 'None' && materialCodeStr !== 'None - None') {
-                              materialMatches = Boolean(silo.material_code === materialCodeStr ||
+                              materialMatches = Boolean(sameMaterialCode(silo.material_code, materialCodeStr) ||
                                               silo.material_name === materialCodeStr ||
                                               // Extract just the code part from "210 - Soya Oil" format
                                               (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                               silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                               sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                               // Also check if silo material matches the full display text
                                               (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                silo.material_name === materialCodeStr.split(' - ')[1]));
@@ -2451,11 +2407,11 @@ export function Orders() {
                                                 materialCodeStr === '' ||
                                                 materialCodeStr === 'None' ||
                                                 materialCodeStr === 'None - None' ||
-                                          silo.material_code === materialCodeStr ||
+                                          sameMaterialCode(silo.material_code, materialCodeStr) ||
                                           silo.material_name === materialCodeStr ||
                                                 // Extract just the code part from "210 - Soya Oil" format
                                                 (materialCodeStr && materialCodeStr.includes(' - ') && 
-                                                 silo.material_code === materialCodeStr.split(' - ')[0]) ||
+                                                 sameMaterialCode(silo.material_code, materialCodeStr.split(' - ')[0])) ||
                                                 // Also check if silo material matches the full display text
                                                 (materialCodeStr && materialCodeStr.includes(' - ') && 
                                                  silo.material_name === materialCodeStr.split(' - ')[1]));

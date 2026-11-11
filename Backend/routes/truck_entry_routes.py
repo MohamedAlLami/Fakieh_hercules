@@ -108,6 +108,91 @@ def scale_live(scale_id: int):
     return jsonify(reading), status
 
 
+@truck_entry_bp.route("/silos", methods=["GET"])
+def list_silos_for_material():
+    """Silos holding `material_code` (matching) and silos with no material (unassigned)."""
+    from services.silo_stock import classify_silos
+
+    material_code = str(request.args.get("material_code") or "").strip()
+    if not material_code:
+        return jsonify({"error": "material_code is required"}), 400
+    try:
+        # Reuse the Storage page source (silo_status + live PLC quantity merge).
+        from routes.plc_routes import silos_from_db_under_plc_prefix
+        silos = silos_from_db_under_plc_prefix().get_json() or []
+    except Exception as e:
+        return jsonify({"error": "Failed to load silos", "detail": str(e)}), 502
+    return jsonify(classify_silos(silos, material_code)), 200
+
+
+def _silo_exists(silo_no: int) -> bool:
+    from routes.plc_routes import _app_rows
+    rows = _app_rows("SELECT 1 FROM public.silo_status WHERE silo_no = %(s)s", {"s": silo_no})
+    return bool(rows)
+
+
+def _run_stock_update(order: TruckWeighOrder, retry: bool = False):
+    """Apply the order's signed delta to its silo and record the outcome.
+
+    Never raises: a weighbridge trip must not fail because of stock bookkeeping.
+    Uses its own commit, after the trip itself is already committed.
+
+    Retry design: stock_applied_at is stamped the moment the database quantity has
+    been moved (even while stock_status is still 'pending'). A retry sees it and
+    passes db_already_applied=True, so only the PLC write and status change remain.
+    """
+    try:
+        from services.silo_stock import NOT_CONFIRMED_NOTE, apply_stock_delta
+
+        if retry:
+            delta = float(order.stock_delta_kg)
+        else:
+            delta = float(order.first_weight_kg) - float(order.second_weight_kg)
+            order.stock_delta_kg = delta
+        db_done = retry and order.stock_applied_at is not None
+        plc_before = (
+            order.stock_qty_before
+            if retry and (order.stock_note or "").startswith(NOT_CONFIRMED_NOTE)
+            else None
+        )
+        res = apply_stock_delta(
+            order.silo_no, delta, db_already_applied=db_done, plc_before_attempt=plc_before
+        )
+        order.stock_status = res["status"]
+        if res.get("qty_before") is not None:
+            order.stock_qty_before = res["qty_before"]
+        if res.get("qty_after") is not None:
+            order.stock_qty_after = res["qty_after"]
+        if res["status"] == "applied" or (res.get("db_applied") and not db_done):
+            order.stock_applied_at = _utcnow()
+        order.stock_note = (res.get("note") or "")[:255]
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        try:
+            order.stock_status = "pending"
+            order.stock_note = f"stock update error: {e}"[:255]
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+
+@truck_entry_bp.route("/orders/<int:order_id>/apply-stock", methods=["POST"])
+def apply_stock(order_id: int):
+    """Retry the silo stock update of a completed order whose stock_status is 'pending'."""
+    order = TruckWeighOrder.query.filter_by(id=order_id).with_for_update().first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    if order.stock_status == "applied":
+        return jsonify({"error": "Stock already applied", "stock_status": "applied"}), 409
+    if order.stock_status != "pending" or order.silo_no is None or order.stock_delta_kg is None:
+        return jsonify({"error": "Order has no pending stock update"}), 409
+
+    _run_stock_update(order, retry=True)
+    truck_map, driver_map = _enrich_truck_maps({order.truck_id})
+    return jsonify(_order_dict(order, truck_map, driver_map)), 200
+
+
 @truck_entry_bp.route("/orders", methods=["POST"])
 def create_order():
     data = request.get_json(force=True) or {}
@@ -120,6 +205,21 @@ def create_order():
         return jsonify({"error": "material_code is required"}), 400
     if not is_valid_material_code(material_code):
         return jsonify({"error": f"Invalid material_code: {material_code}"}), 400
+
+    silo_no = None
+    raw_silo = data.get("silo_no")
+    if raw_silo is not None and raw_silo != "":
+        if isinstance(raw_silo, bool) or not isinstance(raw_silo, (int, str)) or (
+            isinstance(raw_silo, str) and not raw_silo.strip().lstrip("-").isdigit()
+        ):
+            return jsonify({"error": "silo_no must be an integer"}), 400
+        silo_no = int(raw_silo)
+        try:
+            exists = _silo_exists(silo_no)
+        except Exception as e:
+            return jsonify({"error": "Could not verify silo", "detail": str(e)}), 500
+        if not exists:
+            return jsonify({"error": f"Silo {silo_no} not found"}), 400
 
     truck = Truck.query.get(int(truck_id))
     if not truck:
@@ -140,6 +240,7 @@ def create_order():
         truck_id=int(truck_id),
         material_code=material_code,
         material_name=material_name,
+        silo_no=silo_no,
         status="awaiting_first",
         created_at=_utcnow(),
     )
@@ -221,6 +322,10 @@ def save_second_weight(order_id: int):
         db.session.rollback()
         return jsonify({"error": "Failed to save second weight", "detail": str(e)}), 500
 
+    # Trip is committed. Silo stock is best effort and must never fail the trip.
+    if order.silo_no is not None and order.stock_status != "applied":
+        _run_stock_update(order)
+
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 200
 
@@ -290,7 +395,11 @@ def get_order(order_id: int):
 
 @truck_entry_bp.route("/orders/<int:order_id>", methods=["DELETE"])
 def delete_order(order_id: int):
-    """Cancel/remove an open weigh trip so the truck can be used again."""
+    """Cancel/remove an open weigh trip so the truck can be used again.
+
+    Only open trips can be cancelled and stock moves only on exit weight, so
+    cancelling never reverses (and never needs to reverse) stock.
+    """
     order = TruckWeighOrder.query.get(order_id)
     if not order:
         return jsonify({"error": "Order not found"}), 404

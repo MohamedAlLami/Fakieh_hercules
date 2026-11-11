@@ -18,6 +18,27 @@ export interface TruckWeighOrder {
   status: TruckWeighStatus;
   site_status?: string;
   created_at?: string | null;
+  silo_no?: number | null;
+  /** Signed kg: positive = silo gains (truck in heavy, out light). */
+  stock_delta_kg?: number | null;
+  stock_status?: "applied" | "pending" | "skipped" | null;
+  stock_qty_before?: number | null;
+  stock_qty_after?: number | null;
+  stock_applied_at?: string | null;
+  stock_note?: string | null;
+}
+
+export interface SiloOption {
+  siloNo: number;
+  materialCode: string;
+  materialName: string;
+  quantityKg: number | null;
+  lockActive: boolean;
+}
+
+export interface SilosForMaterial {
+  matching: SiloOption[];
+  unassigned: SiloOption[];
 }
 
 export interface ScaleLiveReading {
@@ -53,12 +74,17 @@ async function parseJson<T>(res: Response): Promise<T> {
 
 export async function createTruckWeighOrder(
   truckId: number,
-  materialCode: string
+  materialCode: string,
+  siloNo?: number | null
 ): Promise<TruckWeighOrder> {
   const res = await fetch(`${BASE}/orders`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ truck_id: truckId, material_code: materialCode }),
+    body: JSON.stringify({
+      truck_id: truckId,
+      material_code: materialCode,
+      ...(siloNo != null ? { silo_no: siloNo } : {}),
+    }),
   });
   const text = await res.text();
   let data: unknown;
@@ -86,6 +112,21 @@ export async function createTruckWeighOrder(
     throw new Error(err?.error || text || res.statusText);
   }
   return data as TruckWeighOrder;
+}
+
+export async function fetchSilosForMaterial(
+  materialCode: string,
+  signal?: AbortSignal
+): Promise<SilosForMaterial> {
+  const res = await fetch(`${BASE}/silos?material_code=${encodeURIComponent(materialCode)}`, { signal });
+  const data = await parseJson<Partial<SilosForMaterial>>(res);
+  return { matching: data.matching ?? [], unassigned: data.unassigned ?? [] };
+}
+
+/** Retry the silo stock update of a completed order whose stock_status is 'pending'. */
+export async function applyOrderStock(orderId: number): Promise<TruckWeighOrder> {
+  const res = await fetch(`${BASE}/orders/${orderId}/apply-stock`, { method: "POST" });
+  return parseJson(res);
 }
 
 export async function saveFirstWeight(orderId: number, weight: number): Promise<TruckWeighOrder> {

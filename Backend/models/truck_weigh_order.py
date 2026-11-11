@@ -20,6 +20,17 @@ class TruckWeighOrder(db.Model):
     net_kg = db.Column(db.Float)
     status = db.Column(db.String(20), nullable=False, default="awaiting_first", index=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=db.func.now(), index=True)
+    # Silo stock outcome. stock_delta_kg is signed: truck in heavy / out light => positive.
+    # stock_applied_at is set as soon as the database quantity has been moved (even
+    # while stock_status is still 'pending'), and is what stops a retry from adjusting
+    # the database twice.
+    silo_no = db.Column(db.Integer)
+    stock_delta_kg = db.Column(db.Float)
+    stock_status = db.Column(db.String(20))
+    stock_qty_before = db.Column(db.Float)
+    stock_qty_after = db.Column(db.Float)
+    stock_applied_at = db.Column(db.DateTime(timezone=True))
+    stock_note = db.Column(db.String(255))
 
     def compute_net(self):
         if self.first_weight_kg is None or self.second_weight_kg is None:
@@ -52,6 +63,13 @@ class TruckWeighOrder(db.Model):
             "status": self.status,
             "site_status": self.site_status(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "silo_no": self.silo_no,
+            "stock_delta_kg": self.stock_delta_kg,
+            "stock_status": self.stock_status,
+            "stock_qty_before": self.stock_qty_before,
+            "stock_qty_after": self.stock_qty_after,
+            "stock_applied_at": self.stock_applied_at.isoformat() if self.stock_applied_at else None,
+            "stock_note": self.stock_note,
         }
 
 
@@ -69,8 +87,17 @@ def ensure_truck_weigh_orders_table():
         "CREATE INDEX IF NOT EXISTS ix_truck_weigh_orders_status ON truck_weigh_orders (status)",
         "CREATE INDEX IF NOT EXISTS ix_truck_weigh_orders_created_at ON truck_weigh_orders (created_at)",
     ]
+    column_statements = [
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS silo_no INTEGER",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_delta_kg DOUBLE PRECISION",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_status VARCHAR(20)",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_qty_before DOUBLE PRECISION",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_qty_after DOUBLE PRECISION",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_applied_at TIMESTAMPTZ",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS stock_note VARCHAR(255)",
+    ]
     try:
-        for stmt in index_statements:
+        for stmt in column_statements + index_statements:
             db.session.execute(text(stmt))
         db.session.commit()
     except Exception:

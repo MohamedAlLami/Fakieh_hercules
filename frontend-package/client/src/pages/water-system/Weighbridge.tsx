@@ -280,6 +280,7 @@ export default function Weighbridge() {
                   <TableHead>Plate</TableHead>
                   <TableHead>Driver</TableHead>
                   <TableHead>Material</TableHead>
+                  <TableHead>Silo</TableHead>
                   <TableHead>IN time</TableHead>
                   <TableHead>OUT time</TableHead>
                   <TableHead>IN (kg)</TableHead>
@@ -306,6 +307,7 @@ export default function Weighbridge() {
                         <span>{row.material_name ?? "-"}</span>
                       </div>
                     </TableCell>
+                    <TableCell>{row.silo_no != null ? `Silo ${row.silo_no}` : "-"}</TableCell>
                     <TableCell>{fmtTime(row.first_ts)}</TableCell>
                     <TableCell>{fmtTime(row.second_ts)}</TableCell>
                     <TableCell>
@@ -318,13 +320,27 @@ export default function Weighbridge() {
                       <span className="inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 light:bg-yellow-100 border border-yellow-500/20 text-yellow-400 light:text-yellow-600">
                         {row.net_kg != null ? Math.round(row.net_kg) : "-"}
                       </span>
+                      {row.silo_no != null && row.stock_delta_kg != null && (
+                        <div className="mt-1 text-[11px] text-slate-400 light:text-gray-500 whitespace-nowrap">
+                          {row.stock_delta_kg > 0 ? "+" : ""}
+                          {Math.round(row.stock_delta_kg).toLocaleString()} kg → Silo {row.silo_no}
+                          {row.stock_status === "pending" && (
+                            <span
+                              className="ml-1.5 text-amber-400/80 light:text-amber-700"
+                              title={row.stock_note ?? "Silo quantity not yet confirmed on the PLC"}
+                            >
+                              pending
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
                 {filteredRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={10}
+                      colSpan={11}
                       className="text-center py-8 text-sm text-slate-400 light:text-gray-500"
                     >
                       {loading ? "Loading..." : `No completed trips on ${reportDate ?? selectedDate}`}

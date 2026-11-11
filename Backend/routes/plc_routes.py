@@ -541,7 +541,9 @@ def render_silo_qty(b: bytearray, qty_map: Dict[int, Tuple[int, str]]) -> Dict[i
 def fetch_silo_qty_from_plc() -> Dict[int, float]:
     from routes.silo_qty_map import load_qty_map
     m = load_qty_map(5)
-    b = read_db_bytes(5, _needed_bytes(m))
+    # Ask for exactly the mapped length. DB5 on site is 492 bytes; the usual +8 margin made the
+    # read fail and fall back to 384 bytes, which silently dropped silos 822-848.
+    b = read_db_bytes(5, int(m["max_byte"]))
     if not b:
         return {}
     return render_silo_qty(b, m["qty_map"])
