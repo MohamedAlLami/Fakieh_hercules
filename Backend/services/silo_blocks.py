@@ -243,12 +243,25 @@ def load_map(path: Optional[str] = None) -> Dict[int, int]:
         return {}
 
 
-def save_map(mapping: Dict[int, int], path: Optional[str] = None, note: str = "") -> None:
+def load_suspects(path: Optional[str] = None) -> Dict[int, int]:
+    """Silos set aside because their block stopped matching; they are re-checked on every refresh."""
+    path = path or map_file_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        return {int(k): int(v) for k, v in (raw.get("set_aside") or {}).items()}
+    except Exception:
+        return {}
+
+
+def save_map(mapping: Dict[int, int], path: Optional[str] = None, note: str = "",
+             suspects: Optional[Dict[int, int]] = None) -> None:
     path = path or map_file_path()
     payload = {
         "note": note or "silo number -> PLC data block; rebuilt automatically by a read-only scan",
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "map": {str(k): int(v) for k, v in sorted(mapping.items())},
+        "set_aside": {str(k): int(v) for k, v in sorted((suspects or {}).items())},
     }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -279,7 +292,7 @@ class SiloBlockService:
         self._scanning = False
         # silo -> block it used to live in. Checked again on every refresh, so a silo whose block
         # reappears (a PLC download that was rolled back, a transient glitch) comes straight back.
-        self._suspects: Dict[int, int] = {}
+        self._suspects: Dict[int, int] = {k: v for k, v in load_suspects(path).items() if k not in self._map}
         self._scan_range = (SCAN_FIRST_DB, SCAN_LAST_DB)
 
     def mapping(self) -> Dict[int, int]:
@@ -316,12 +329,15 @@ class SiloBlockService:
                     db = self._map.pop(s, None)
                     if db is not None:
                         self._suspects[s] = db
+            self._save()
             self._maybe_rescan(f"{len(stale)} silo block(s) no longer match: {stale[:8]}")
         return qty
 
     def _save(self) -> None:
         try:
-            save_map(self.mapping(), self._path)
+            with self._lock:
+                mapping, suspects = dict(self._map), dict(self._suspects)
+            save_map(mapping, self._path, suspects=suspects)
         except Exception as e:
             print(f"[SILO-BLOCKS] could not save the map file: {e}")
 

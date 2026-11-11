@@ -287,6 +287,24 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})
             self.assertEqual(svc.mapping(), {801: 4784, 841: 6459})
 
+    def test_set_aside_silo_survives_a_restart_and_comes_back(self):
+        plc = site()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            sb.save_map({801: 4784, 841: 6459}, path)
+            svc = sb.SiloBlockService(plc.read80, plc.is_longer, lambda: KNOWN, path)
+            svc._last_scan = 1e18
+            good = bytes(plc.blocks[6459])
+            plc.blocks[6459] = block(840, 77.0)
+            svc.quantities()                                      # 841 is set aside and saved
+            self.assertEqual(sb.load_map(path), {801: 4784})
+            self.assertEqual(sb.load_suspects(path), {841: 6459})
+            plc.blocks[6459] = bytearray(good)
+            svc2 = sb.SiloBlockService(plc.read80, plc.is_longer, lambda: KNOWN, path)   # "restart"
+            svc2._last_scan = 1e18
+            self.assertEqual(svc2.quantities(), {801: 45000.0, 841: 20000.0})
+            self.assertEqual(sb.load_map(path), {801: 4784, 841: 6459})
+
     def test_missing_map_file_is_empty(self):
         self.assertEqual(sb.load_map(os.path.join(tempfile.gettempdir(), "no-such-map-xyz.json")), {})
 
