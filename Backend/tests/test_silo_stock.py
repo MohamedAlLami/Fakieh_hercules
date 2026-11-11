@@ -144,6 +144,20 @@ class ApplyStockDeltaTests(unittest.TestCase):
         self.assertEqual(plc.writes, [])
 
 
+
+class ReasonNoteTests(unittest.TestCase):
+    def test_block_error_text_becomes_the_note(self):
+        class SiloBlockError(RuntimeError):
+            pass
+
+        def reader(_silo):
+            raise SiloBlockError("PLC block DB6204 no longer belongs to silo 103")
+
+        res = apply_stock_delta(103, 500.0, reader=reader, writer=lambda *a: self.fail("must not write"),
+                                db_updater=lambda s, d, a: (0.0, 500.0), writes_enabled=True, has_address=True)
+        self.assertEqual(res["status"], "pending")
+        self.assertIn("no longer belongs to silo 103", res["note"])
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -117,6 +117,21 @@ class ReadWriteTests(unittest.TestCase):
         self.assertEqual(stale, [841])
         self.assertIsNone(sb.read_one(self.plc.read80, self.map, 841))
 
+    def test_unreadable_block_is_not_called_stale(self):
+        down = lambda db: None                          # PLC down or a dropped packet
+        qty, stale = sb.read_quantities(down, self.map)
+        self.assertEqual((qty, stale), ({}, []))
+
+    def test_checked_read_names_the_reason(self):
+        self.assertEqual(sb.read_one_checked(self.plc.read80, self.map, 841), 20000.0)
+        with self.assertRaisesRegex(sb.SiloBlockError, "no known PLC block"):
+            sb.read_one_checked(self.plc.read80, self.map, 999)
+        with self.assertRaisesRegex(sb.SiloBlockError, "not reachable"):
+            sb.read_one_checked(lambda db: None, self.map, 841)
+        self.plc.blocks[6459] = block(840, 77.0)
+        with self.assertRaisesRegex(sb.SiloBlockError, "no longer belongs to silo 841"):
+            sb.read_one_checked(self.plc.read80, self.map, 841)
+
     def test_write_lands_on_the_quantity_only(self):
         before = bytes(self.plc.blocks[6202])
         sb.write_one(self.plc.read80, self.plc.write_real, self.map, 101, 1152379.25)
@@ -159,6 +174,23 @@ class ServiceTests(unittest.TestCase):
             svc.invalidate()
             self.assertEqual(svc.quantities(), {801: 45000.0})
             self.assertNotIn(841, svc.mapping())
+
+    def test_plc_outage_keeps_the_map(self):
+        plc = site()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "map.json")
+            sb.save_map({801: 4784, 841: 6459}, path)
+            alive = {"up": True}
+            svc = sb.SiloBlockService(lambda db: plc.read80(db) if alive["up"] else None,
+                                      plc.is_longer, lambda: KNOWN, path)
+            svc._last_scan = 1e18
+            self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})
+            alive["up"] = False
+            svc.invalidate()
+            self.assertEqual(svc.quantities(), {})
+            self.assertEqual(svc.mapping(), {801: 4784, 841: 6459})   # nothing dropped
+            alive["up"] = True
+            self.assertEqual(svc.quantities(), {801: 45000.0, 841: 20000.0})   # back at once
 
     def test_missing_map_file_is_empty(self):
         self.assertEqual(sb.load_map(os.path.join(tempfile.gettempdir(), "no-such-map-xyz.json")), {})

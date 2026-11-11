@@ -96,16 +96,42 @@ def discover(read80: Read80, is_longer: IsLonger, known_silos: Iterable[int],
 
 
 def read_quantities(read80: Read80, mapping: Dict[int, int]) -> Tuple[Dict[int, float], List[int]]:
-    """Read every mapped silo. Returns ({silo: kg}, [silos whose block no longer matches])."""
+    """Read every mapped silo. Returns ({silo: kg}, [silos whose block no longer matches]).
+
+    A block that could not be READ (PLC down, a dropped packet) is simply absent from the result:
+    that says nothing about the map, so it is not reported as stale. Stale means the block was
+    read and carries a different silo number, or is no longer a silo block at all.
+    """
     out: Dict[int, float] = {}
     stale: List[int] = []
     for silo, db in mapping.items():
-        blk = parse_block(read80(db))
+        data = read80(db)
+        if data is None:
+            continue
+        blk = parse_block(data)
         if blk is None or blk["silo_no"] != int(silo):
             stale.append(int(silo))
             continue
         out[int(silo)] = round(float(blk["quantity_kg"]), 3)
     return out, stale
+
+
+class SiloBlockError(RuntimeError):
+    """Why a silo's block could not be used; the text is shown to the operator as the note."""
+
+
+def read_one_checked(read80: Read80, mapping: Dict[int, int], silo_no: int) -> float:
+    """Fresh quantity of one silo. Raises SiloBlockError saying which of the three things went wrong."""
+    db = mapping.get(int(silo_no))
+    if db is None:
+        raise SiloBlockError("silo has no known PLC block")
+    data = read80(db)
+    if data is None:
+        raise SiloBlockError("PLC not reachable")
+    blk = parse_block(data)
+    if blk is None or blk["silo_no"] != int(silo_no):
+        raise SiloBlockError(f"PLC block DB{db} no longer belongs to silo {int(silo_no)}")
+    return float(blk["quantity_kg"])
 
 
 def read_one(read80: Read80, mapping: Dict[int, int], silo_no: int) -> Optional[float]:
@@ -213,7 +239,8 @@ class SiloBlockService:
             return {}
         qty, stale = read_quantities(self._read80, mapping)
         with self._lock:
-            self._cache, self._cache_at = dict(qty), time.time()
+            if qty or stale:      # nothing read at all (PLC down): do not cache an empty answer
+                self._cache, self._cache_at = dict(qty), time.time()
         if stale:
             with self._lock:
                 for s in stale:
@@ -223,6 +250,10 @@ class SiloBlockService:
 
     def read_fresh(self, silo_no: int) -> Optional[float]:
         return read_one(self._read80, self.mapping(), silo_no)
+
+    def read_fresh_checked(self, silo_no: int) -> float:
+        """Like read_fresh but raises SiloBlockError with the reason."""
+        return read_one_checked(self._read80, self.mapping(), silo_no)
 
     def invalidate(self) -> None:
         with self._lock:

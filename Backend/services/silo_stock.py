@@ -39,15 +39,15 @@ def plc_writes_enabled() -> bool:
 # ---- default I/O (lazy imports: no snap7 / DB needed to import this module) ----
 
 def _default_reader(silo_no: int) -> Optional[float]:
-    """Fresh quantity from the silo's own PLC block, or None when it cannot be read."""
-    try:
-        from routes import plc_routes
-        svc = plc_routes.silo_block_service()
-        if svc is None:
-            return None
-        return svc.read_fresh(silo_no)
-    except Exception:
+    """Fresh quantity from the silo's own PLC block.
+
+    Raises services.silo_blocks.SiloBlockError with the reason when the block cannot be used.
+    """
+    from routes import plc_routes
+    svc = plc_routes.silo_block_service()
+    if svc is None:
         return None
+    return svc.read_fresh_checked(silo_no)
 
 
 def _default_writer(silo_no: int, new_kg: float) -> None:
@@ -155,12 +155,15 @@ def apply_stock_delta(
     if not has_address:
         return db_only("silo has no known PLC block")
 
+    read_note = "PLC not reachable"
     try:
         current = reader(silo_no)
-    except Exception:
+    except Exception as e:
         current = None
+        if type(e).__name__ == "SiloBlockError" and str(e):
+            read_note = str(e)
     if current is None:
-        return db_only("PLC not reachable")
+        return db_only(read_note)
 
     current = float(current)
     new_qty, clamped = compute_new_qty(current, delta_kg)

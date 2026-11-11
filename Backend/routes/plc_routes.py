@@ -562,17 +562,21 @@ def _plc_read_raw(db_no: int, start: int, size: int) -> Optional[bytes]:
     global CLIENT
     if DEMO_MODE or not _snap7_loaded:
         return None
-    cli = ensure_client()
-    if cli is None:
-        return None
-    try:
-        with CLIENT_LOCK:
-            return bytes(cli.db_read(db_no, start, size))
-    except Exception as e:
-        msg = str(e).lower()
-        if "connection" in msg or "tcp" in msg or "socket" in msg:
+    for attempt in (1, 2):
+        cli = ensure_client()
+        if cli is None:
+            return None
+        try:
+            with CLIENT_LOCK:
+                return bytes(cli.db_read(db_no, start, size))
+        except Exception as e:
+            msg = str(e).lower()
+            # "Address out of range" / "Item not available" are real answers from the PLC: the block
+            # is shorter or absent. Anything else is a transport problem: reconnect and try once more.
+            if "out of range" in msg or "not available" in msg or "does not exist" in msg:
+                return None
             CLIENT = None
-        return None
+    return None
 
 
 _SILO_BLOCK_SERVICE = None
