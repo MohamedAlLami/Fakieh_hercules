@@ -163,7 +163,7 @@ class ReadWriteTests(unittest.TestCase):
         with self.assertRaisesRegex(sb.SiloBlockError, "no known PLC block"):
             sb.read_one_checked(self.plc.read80, self.map, 999)
         with self.assertRaisesRegex(sb.SiloBlockError, "not reachable"):
-            sb.read_one_checked(plc_down, self.map, 841)
+            sb.read_one_checked(plc_down, self.map, 841, pause=0)
         self.plc.blocks[6459] = block(840, 77.0)
         with self.assertRaisesRegex(sb.SiloBlockError, "no longer belongs to silo 841"):
             sb.read_one_checked(self.plc.read80, self.map, 841)

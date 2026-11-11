@@ -148,13 +148,14 @@ class SiloBlockError(RuntimeError):
     """Why a silo's block could not be used; the text is shown to the operator as the note."""
 
 
-def read_one_checked(read80: Read80, mapping: Dict[int, int], silo_no: int) -> float:
+def read_one_checked(read80: Read80, mapping: Dict[int, int], silo_no: int,
+                     tries: int = 4, pause: float = 0.5) -> float:
     """Fresh quantity of one silo. Raises SiloBlockError saying which of the three things went wrong."""
     db = mapping.get(int(silo_no))
     if db is None:
         raise SiloBlockError("silo has no known PLC block")
     try:
-        data = read80(db)
+        data = _patient(read80, db, tries, pause)     # a stock update is worth a second of patience
     except PlcUnavailable:
         raise SiloBlockError("PLC not reachable")
     blk = parse_block(data)
@@ -195,14 +196,14 @@ def write_one(read80: Read80, write_real: Callable[[int, int, float], None],
     db = mapping.get(silo_no)
     if db is None:
         raise LookupError(f"silo {silo_no} has no known PLC block")
-    blk = parse_block(read80(db))
+    blk = parse_block(_patient(read80, db, 4, 0.5))
     if blk is None or blk["silo_no"] != silo_no:
         raise RuntimeError(f"DB{db} no longer carries silo {silo_no}; refusing to write")
     if not math.isfinite(float(new_kg)):
         raise ValueError("quantity is not a finite number")
     old_kg = float(blk["quantity_kg"])
     write_real(db, OFF_QTY, float(new_kg))
-    back = parse_block(read80(db))
+    back = parse_block(_patient(read80, db, 4, 0.5))
     if back is None or back["silo_no"] != silo_no:
         raise RuntimeError(f"DB{db} could not be read back after the write")
     tol = max(READBACK_TOLERANCE_KG, abs(float(new_kg)) * 1e-6)
@@ -210,7 +211,7 @@ def write_one(read80: Read80, write_real: Callable[[int, int, float], None],
         raise RuntimeError(f"PLC holds {back['quantity_kg']:.3f} kg after writing {float(new_kg):.3f} kg")
     if settle_seconds > 0 and abs(old_kg - float(new_kg)) >= tol:
         sleep(settle_seconds)
-        later = parse_block(read80(db))
+        later = parse_block(_patient(read80, db, 4, 0.5))
         if later is None or later["silo_no"] != silo_no:
             raise RuntimeError(f"DB{db} could not be read back {settle_seconds:.0f} s after the write")
         # The plant may legitimately dose a little out of the silo meanwhile, so the value may have
