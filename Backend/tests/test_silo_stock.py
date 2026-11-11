@@ -44,10 +44,14 @@ class ComputeNewQtyTests(unittest.TestCase):
     def test_loss(self):
         self.assertEqual(compute_new_qty(1000, -400), (600.0, False))
 
-    def test_clamp(self):
-        self.assertEqual(compute_new_qty(100, -250), (0.0, True))
+    def test_below_zero_is_not_clamped(self):
+        # The PLC itself runs silos negative; hiding that would falsify the books.
+        self.assertEqual(compute_new_qty(100, -250), (-150.0, True))
 
-    def test_exact_zero_not_clamped(self):
+    def test_negative_start_gains_normally(self):
+        self.assertEqual(compute_new_qty(-28.935, 1000), (971.065, False))
+
+    def test_exact_zero_not_flagged(self):
         self.assertEqual(compute_new_qty(100, -100), (0.0, False))
 
     def test_rounding(self):
@@ -68,10 +72,12 @@ class ApplyStockDeltaTests(unittest.TestCase):
         self.assertEqual(res["qty_after"], 700.0)
         self.assertEqual(plc.writes, [(104, 700.0)])
 
-    def test_clamped_at_zero(self):
+    def test_below_zero_is_written_and_noted(self):
         res, plc, _ = run(-5000.0)
-        self.assertEqual(res["qty_after"], 0.0)
-        self.assertIn("clamped", res["note"])
+        self.assertEqual(res["status"], "applied")
+        self.assertEqual(res["qty_after"], -4000.0)
+        self.assertEqual(plc.writes, [(104, -4000.0)])
+        self.assertIn("below zero", res["note"])
 
     def test_writes_disabled_is_db_only(self):
         res, plc, db = run(100.0, writes_enabled=False)
@@ -84,7 +90,7 @@ class ApplyStockDeltaTests(unittest.TestCase):
     def test_no_address(self):
         res, plc, db = run(100.0, has_address=False)
         self.assertEqual(res["status"], "pending")
-        self.assertIn("address", res["note"])
+        self.assertIn("no known PLC block", res["note"])
         self.assertEqual(plc.writes, [])
         self.assertEqual(db.stored, 600.0)
 

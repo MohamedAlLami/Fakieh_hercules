@@ -16,11 +16,14 @@ NOT_CONFIRMED_NOTE = "PLC write not confirmed"
 
 
 def compute_new_qty(current_kg: float, delta_kg: float) -> Tuple[float, bool]:
-    """Return (new_kg, clamped). Never below 0; clamped=True when it was."""
-    raw = float(current_kg) + float(delta_kg)
-    if raw < 0:
-        return 0.0, True
-    return round(raw, 3), False
+    """Return (new_kg, below_zero).
+
+    The result is NOT clamped at zero. The PLC itself runs silo quantities negative when more is
+    dosed out than was booked in (silo 314 read -6005 kg on site), so a negative figure is the
+    honest one and keeps later corrections arithmetically right. below_zero flags it for the note.
+    """
+    raw = round(float(current_kg) + float(delta_kg), 3)
+    return raw, raw < 0
 
 
 def plc_writes_enabled() -> bool:
@@ -36,29 +39,39 @@ def plc_writes_enabled() -> bool:
 # ---- default I/O (lazy imports: no snap7 / DB needed to import this module) ----
 
 def _default_reader(silo_no: int) -> Optional[float]:
-    """Live PLC quantity, or None when it cannot be read."""
+    """Fresh quantity from the silo's own PLC block, or None when it cannot be read."""
     try:
         from routes import plc_routes
-        live = plc_routes.fetch_silo_qty_from_plc()
+        svc = plc_routes.silo_block_service()
+        if svc is None:
+            return None
+        return svc.read_fresh(silo_no)
     except Exception:
         return None
-    if not live or silo_no not in live:
-        return None
-    return float(live[silo_no])
 
 
 def _default_writer(silo_no: int, new_kg: float) -> None:
+    """Write the silo's own PLC block (what SCADA shows). DB5 is a copy and is never written."""
     from routes import plc_routes
-    from routes.silo_qty_map import QTY_MAP_DB5
-    offset = QTY_MAP_DB5[silo_no][0]
-    plc_routes._db_write(5, offset, plc_routes._pack_real(new_kg))
+    from services import silo_blocks
+    svc = plc_routes.silo_block_service()
+    if svc is None:
+        raise RuntimeError("silo block reading is switched off")
+    silo_blocks.write_one(
+        read80=lambda db: plc_routes._plc_read_raw(db, 0, silo_blocks.BLOCK_LEN),
+        write_real=lambda db, off, value: plc_routes._db_write(db, off, plc_routes._pack_real(value)),
+        mapping=svc.mapping(),
+        silo_no=silo_no,
+        new_kg=new_kg,
+    )
+    svc.invalidate()
 
 
 def _default_db_updater(silo_no: int, delta_kg: float,
                         absolute_kg: Optional[float]) -> Tuple[float, float]:
     """Update public.silo_status.quantity_kg. Returns (before, after).
 
-    absolute_kg given -> set to it; otherwise stored qty (COALESCE 0) + delta, floored at 0.
+    absolute_kg given -> set to it; otherwise stored qty (COALESCE 0) + delta.
     """
     from routes import plc_routes
     engine = plc_routes._engine_app()
@@ -79,9 +92,9 @@ def _default_db_updater(silo_no: int, delta_kg: float,
 
 
 def _has_plc_address(silo_no: int) -> bool:
-    from routes.silo_qty_map import QTY_MAP_DB5
-    entry = QTY_MAP_DB5.get(silo_no)
-    return bool(entry) and entry[1] == "REAL"
+    from routes import plc_routes
+    svc = plc_routes.silo_block_service()
+    return svc is not None and int(silo_no) in svc.mapping()
 
 
 def apply_stock_delta(
@@ -140,7 +153,7 @@ def apply_stock_delta(
     if not writes_enabled:
         return db_only("PLC write disabled")
     if not has_address:
-        return db_only("silo has no PLC quantity address")
+        return db_only("silo has no known PLC block")
 
     try:
         current = reader(silo_no)
@@ -151,7 +164,7 @@ def apply_stock_delta(
 
     current = float(current)
     new_qty, clamped = compute_new_qty(current, delta_kg)
-    clamp_note = " (clamped at 0)" if clamped else ""
+    clamp_note = " (below zero)" if clamped else ""
 
     if plc_before_attempt is not None:
         landed, _ = compute_new_qty(plc_before_attempt, delta_kg)
