@@ -211,6 +211,10 @@ def _sync_db(res: dict, silo_no: int, delta_kg: float, plc_qty: float,
 # ---- silo listing for the weighbridge dropdown ----
 
 UNASSIGNED_CODES = frozenset({"", "0", "00", "000"})
+# Only the raw-material groups (100-400) can be "unassigned" for a truck. The 600 (pellet) and
+# 900 (micro-ingredient) bins have no material name in Hercules, but that is missing data, not
+# an empty silo: they hold stock, and a truck never unloads into them.
+UNASSIGNED_MAX_SILO_NO = 499
 OUT_OF_SERVICE_CODE = "999"
 
 
@@ -221,6 +225,13 @@ def normalise_code(code) -> str:
         return ""
     stripped = s.lstrip("0")
     return stripped if stripped else "0"
+
+
+def _silo_int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 10 ** 9
 
 
 def classify_silos(silos: list, material_code: str) -> dict:
@@ -242,6 +253,6 @@ def classify_silos(silos: list, material_code: str) -> dict:
             continue
         if want and norm == want and norm != "0":
             matching.append(item)
-        elif not name and raw_code in UNASSIGNED_CODES:
+        elif not name and raw_code in UNASSIGNED_CODES and _silo_int(s.get("siloNo")) <= UNASSIGNED_MAX_SILO_NO:
             unassigned.append(item)
     return {"matching": matching, "unassigned": unassigned}

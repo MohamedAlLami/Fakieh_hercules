@@ -181,4 +181,5 @@ class ClassifySilosTests(unittest.TestCase):
         from services.silo_stock import classify_silos
         out = classify_silos(self.ROWS, "100")
         self.assertEqual([s["siloNo"] for s in out["matching"]], [101])
-        self.assertEqual([s["siloNo"] for s in out["unassigned"]], [301, 313, 601])
+        # 601 has no material name either, but pellet / micro bins are never offered to a truck
+        self.assertEqual([s["siloNo"] for s in out["unassigned"]], [301, 313])
