@@ -3,8 +3,8 @@
 Pure helpers (compute_new_qty) plus apply_stock_delta, which talks to the PLC
 and database only through injectable callables so it is unit-testable.
 
-PLC writes are conservative: gated by WEIGHBRIDGE_WRITE_SILO_QTY=true AND
-plc_routes.DEMO_MODE being false, and every write is read back and verified.
+PLC writes are OFF until switched on (see plc_writes_enabled), never happen in DEMO_MODE, go to the
+silo's own block only, and every write is checked before, straight after and again two seconds later.
 """
 from __future__ import annotations
 
@@ -26,8 +26,26 @@ def compute_new_qty(current_kg: float, delta_kg: float) -> Tuple[float, bool]:
     return raw, raw < 0
 
 
+PLC_WRITE_FLAG_FILE = "enable_weighbridge_plc_write.txt"
+
+
+def plc_write_flag_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), PLC_WRITE_FLAG_FILE)
+
+
 def plc_writes_enabled() -> bool:
-    if os.getenv("WEIGHBRIDGE_WRITE_SILO_QTY", "false").strip().lower() != "true":
+    """Whether a weighbridge trip may write the silo quantity to the PLC. OFF unless switched on.
+
+    Switch: the file Backend/enable_weighbridge_plc_write.txt exists (create it to switch on, delete
+    it to switch off; read on every trip, no restart needed). The environment variable
+    WEIGHBRIDGE_WRITE_SILO_QTY=true|false, when set, overrides the file. Never in DEMO_MODE.
+    """
+    env = os.getenv("WEIGHBRIDGE_WRITE_SILO_QTY", "").strip().lower()
+    if env in ("true", "false"):
+        on = env == "true"
+    else:
+        on = os.path.exists(plc_write_flag_path())
+    if not on:
         return False
     try:
         from routes import plc_routes

@@ -20,7 +20,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { fetchCompletedToday, fetchOpenOrders, type TruckWeighOrder } from "../../api/truckEntry";
+import {
+  applyOrderStock,
+  fetchCompletedToday,
+  fetchOpenOrders,
+  type TruckWeighOrder,
+} from "../../api/truckEntry";
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
 
 function fmtTime(ts?: string | null) {
@@ -42,6 +47,7 @@ export default function Weighbridge() {
   );
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<number | null>(null);
 
   const [filters, setFilters] = useState({
     truckId: "",
@@ -73,6 +79,26 @@ export default function Weighbridge() {
       setLoading(false);
     }
   }, [selectedDate]);
+
+  // Send a pending silo-quantity update to the PLC again (the trip itself is already saved).
+  const retryStock = useCallback(
+    async (orderId: number) => {
+      setRetryingId(orderId);
+      setErrorMsg(null);
+      try {
+        const updated = await applyOrderStock(orderId);
+        if (updated.stock_status === "pending") {
+          setErrorMsg(`Silo quantity still pending: ${updated.stock_note ?? "PLC did not confirm"}`);
+        }
+        await loadData();
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : "Could not send the silo quantity");
+      } finally {
+        setRetryingId(null);
+      }
+    },
+    [loadData]
+  );
 
   useEffect(() => {
     loadData();
@@ -325,12 +351,23 @@ export default function Weighbridge() {
                           {row.stock_delta_kg > 0 ? "+" : ""}
                           {Math.round(row.stock_delta_kg).toLocaleString()} kg → Silo {row.silo_no}
                           {row.stock_status === "pending" && (
-                            <span
-                              className="ml-1.5 text-amber-400/80 light:text-amber-700"
-                              title={row.stock_note ?? "Silo quantity not yet confirmed on the PLC"}
-                            >
-                              pending
-                            </span>
+                            <>
+                              <span
+                                className="ml-1.5 text-amber-400/80 light:text-amber-700"
+                                title={row.stock_note ?? "Silo quantity not yet confirmed on the PLC"}
+                              >
+                                pending
+                              </span>
+                              <button
+                                type="button"
+                                className="ml-1.5 underline underline-offset-2 text-cyan-400 light:text-cyan-700 hover:text-cyan-300 disabled:opacity-50 disabled:no-underline"
+                                disabled={retryingId !== null}
+                                title={row.stock_note ?? undefined}
+                                onClick={() => retryStock(row.id)}
+                              >
+                                {retryingId === row.id ? "sending…" : "retry"}
+                              </button>
+                            </>
                           )}
                         </div>
                       )}

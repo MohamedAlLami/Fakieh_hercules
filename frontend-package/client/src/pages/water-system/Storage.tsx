@@ -2,7 +2,10 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { WaterSystemLayout } from "../../components/water-system/WaterSystemLayout";
 import { KPICard } from "../../components/water-system/KPICard";
-import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap, Printer } from "lucide-react";
+import asmLogo from "@/assets/Asm_Logo.png";
+import fakiehBrandLogo from "@/assets/fakiehlogo.webp";
+import herculesLogo from "@/assets/Hercules_New.png";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -101,7 +104,9 @@ export function Storage() {
     hlActive: "all",
     lockActive: "all",
     dbFilter: "all", // Filter by database (DB1, DB2, DB3, DB5)
+    groupFilter: "all", // Hundreds group of the silo number (100, 200, ...)
   });
+  const [printError, setPrintError] = useState<string | null>(null);
   
   const syncWithPLC = async () => {
     try {
@@ -130,6 +135,16 @@ export function Storage() {
     new Set(allSilos.map((item) => item.bin_name).filter(name => name && name.trim() !== ""))
   ).sort();
 
+  // Hundreds groups (100, 200, ...) that exist in the loaded data
+  const uniqueGroups = Array.from(
+    new Set(
+      allSilos
+        .map((item) => item.silo_no ?? 0)
+        .filter((n) => n > 0)
+        .map((n) => Math.floor(n / 100) * 100)
+    )
+  ).sort((a, b) => a - b);
+
   // Filter silos based on current filters
   const filteredSilos = allSilos.filter((item) => {
     return (
@@ -146,7 +161,10 @@ export function Storage() {
       (filters.lockActive === "all" ||
         (filters.lockActive === "true" ? item.lock_active : !item.lock_active)) &&
       (filters.dbFilter === "all" ||
-        item.dbSource === filters.dbFilter)
+        item.dbSource === filters.dbFilter) &&
+      (filters.groupFilter === "all" ||
+        ((item.silo_no ?? 0) > 0 &&
+          Math.floor((item.silo_no as number) / 100) * 100 === Number(filters.groupFilter)))
     );
   });
 
@@ -158,7 +176,155 @@ export function Storage() {
       hlActive: "all",
       lockActive: "all",
       dbFilter: "all",
+      groupFilter: "all",
     });
+  };
+
+  const escapeHtml = (value: unknown): string =>
+    String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const imageToDataUrl = async (src: string): Promise<string> => {
+    try {
+      const blob = await (await fetch(src)).blob();
+      return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      return src;
+    }
+  };
+
+  // Print exactly the rows currently shown in the table (after all filters)
+  const handlePrint = async () => {
+    setPrintError(null);
+    const rows = filteredSilos;
+    if (rows.length === 0) {
+      setPrintError("No silos to print");
+      return;
+    }
+    try {
+      const [herculesLogoSrc, fakiehLogoSrc, asmLogoSrc] = await Promise.all([
+        imageToDataUrl(herculesLogo),
+        imageToDataUrl(fakiehBrandLogo),
+        imageToDataUrl(asmLogo),
+      ]);
+
+      const printWindow = window.open("", "_blank", "width=800,height=600");
+      if (!printWindow) {
+        setPrintError("Please allow popups to print the storage table");
+        return;
+      }
+
+      const fmtQty = (n: number) =>
+        n.toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 0 });
+      const title =
+        filters.groupFilter === "all"
+          ? "Storage — all groups"
+          : `Storage — ${filters.groupFilter} group`;
+      const summary: string[] = [];
+      if (filters.binName.trim()) summary.push(`Bin: ${filters.binName.trim()}`);
+      if (filters.materialName && filters.materialName !== "all") summary.push(`Material: ${filters.materialName}`);
+      if (filters.materialCode && filters.materialCode !== "all") summary.push(`Code: ${filters.materialCode}`);
+      if (filters.hlActive !== "all") summary.push(`High level: ${filters.hlActive === "true" ? "active" : "inactive"}`);
+      if (filters.lockActive !== "all") summary.push(`Lock: ${filters.lockActive === "true" ? "locked" : "unlocked"}`);
+      if (filters.dbFilter !== "all") summary.push(`Database: ${filters.dbFilter}`);
+      const filterLine = summary.length > 0 ? `Filters: ${summary.join(" | ")}` : "No other filters";
+
+      const totalQty = rows.reduce((sum, s) => sum + (s.quantity_kg ?? 0), 0);
+      const bodyRows = rows
+        .map((silo) => `
+              <tr>
+                <td>${escapeHtml(silo.bin_name)}</td>
+                <td>${escapeHtml(silo.material_name || "—")}</td>
+                <td>${escapeHtml(silo.material_code || "—")}</td>
+                <td class="num">${escapeHtml(fmtQty(silo.quantity_kg ?? 0))}</td>
+                <td>${silo.hl_active ? "HIGH" : "NORMAL"}</td>
+                <td>${silo.lock_active ? "LOCKED" : "UNLOCKED"}</td>
+                <td>${silo.material_code || silo.material_name || silo.hl_active || silo.lock_active ? "ACTIVE" : "EMPTY"}</td>
+              </tr>`)
+        .join("");
+
+      const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    @page { size: A4 portrait; margin: 15mm 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; color: #000; background: #fff; }
+    .page-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 8px; margin-bottom: 12px; }
+    .page-header img { max-height: 50px; max-width: 150px; object-fit: contain; }
+    .logo-right { display: flex; gap: 16px; align-items: center; }
+    h1 { font-size: 20px; margin: 0 0 4px 0; text-align: center; color: #000; }
+    .meta { text-align: center; font-size: 11px; margin: 2px 0; color: #000; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 11px; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr { page-break-inside: avoid; }
+    th, td { border: 1px solid #000; padding: 5px 6px; text-align: left; color: #000; background: #fff; }
+    th { font-weight: bold; }
+    th.num, td.num { text-align: right; }
+    tfoot td { font-weight: bold; }
+    @media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <img src="${escapeHtml(herculesLogoSrc)}" alt="Hercules" />
+    <div class="logo-right">
+      <img src="${escapeHtml(fakiehLogoSrc)}" alt="Fakieh" />
+      <img src="${escapeHtml(asmLogoSrc)}" alt="ASM" />
+    </div>
+  </div>
+  <h1>${escapeHtml(title)}</h1>
+  <p class="meta">Printed: ${escapeHtml(new Date().toLocaleString())}</p>
+  <p class="meta">${escapeHtml(filterLine)}</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Silo</th>
+        <th>Material</th>
+        <th>Material Code</th>
+        <th class="num">Quantity (kg)</th>
+        <th>High Level</th>
+        <th>Lock</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>${bodyRows}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="3">Total: ${rows.length} silo${rows.length === 1 ? "" : "s"}</td>
+        <td class="num">${escapeHtml(fmtQty(totalQty))}</td>
+        <td colspan="3"></td>
+      </tr>
+    </tfoot>
+  </table>
+</body>
+</html>`;
+
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.onload = () => {
+        setTimeout(() => {
+          printWindow.focus();
+          printWindow.print();
+          printWindow.close();
+        }, 300);
+      };
+    } catch {
+      setPrintError("Error printing storage table. Please try again.");
+    }
   };
 
   // Calculate statistics
@@ -235,9 +401,23 @@ export function Storage() {
             >
               {loading ? "🔄 Syncing..." : "⚡ Sync PLC"}
             </Button>
+            <Button
+              onClick={() => { void handlePrint() }}
+              variant="outline"
+              className="text-sm border-slate-600 text-white light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+              disabled={filteredSilos.length === 0}
+            >
+              <Printer className="h-4 w-4 mr-2" />
+              Print
+            </Button>
             {error && (
               <div className="text-red-400 text-sm">
                 ⚠️ {error}
+              </div>
+            )}
+            {printError && (
+              <div className="text-red-400 text-sm">
+                ⚠️ {printError}
               </div>
             )}
           </div>
@@ -258,7 +438,7 @@ export function Storage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-0">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-8 gap-3">
               <div>
                 <label className="text-slate-300 light:text-gray-700 text-xs mb-1 block">
                   Bin Name
@@ -373,6 +553,29 @@ export function Storage() {
                     <SelectItem value="DB2">DB2 - Outloading</SelectItem>
                     <SelectItem value="DB3">DB3 - Main Storage</SelectItem>
                     <SelectItem value="DB5">DB5 - Qty Only</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-slate-300 light:text-gray-700 text-xs mb-1 block">
+                  Group
+                </label>
+                <Select
+                  value={filters.groupFilter}
+                  onValueChange={(value) =>
+                    setFilters({ ...filters, groupFilter: value })
+                  }
+                >
+                  <SelectTrigger className="bg-slate-700 light:bg-white border-slate-600 light:border-gray-300 text-white light:text-gray-700 h-8 text-sm">
+                    <SelectValue placeholder="All groups" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-700 light:bg-white border-slate-600 light:border-gray-300">
+                    <SelectItem value="all">All groups</SelectItem>
+                    {uniqueGroups.map((group) => (
+                      <SelectItem key={group} value={String(group)}>
+                        {group} group
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

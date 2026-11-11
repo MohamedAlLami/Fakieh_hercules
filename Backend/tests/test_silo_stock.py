@@ -158,6 +158,20 @@ class ReasonNoteTests(unittest.TestCase):
         self.assertEqual(res["status"], "pending")
         self.assertIn("no longer belongs to silo 103", res["note"])
 
+
+class WriteSwitchTests(unittest.TestCase):
+    def test_off_by_default_and_env_overrides_file(self):
+        import os
+        from unittest import mock
+        from services import silo_stock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WEIGHBRIDGE_WRITE_SILO_QTY", None)
+            with mock.patch.object(silo_stock, "plc_write_flag_path", return_value="Z:/no/such/file.txt"):
+                self.assertFalse(silo_stock.plc_writes_enabled())
+            os.environ["WEIGHBRIDGE_WRITE_SILO_QTY"] = "false"
+            with mock.patch.object(silo_stock, "plc_write_flag_path", return_value=__file__):
+                self.assertFalse(silo_stock.plc_writes_enabled())      # env says off, file says on
+
 if __name__ == "__main__":
     unittest.main()
 
