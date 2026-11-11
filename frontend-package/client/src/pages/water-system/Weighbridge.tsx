@@ -333,7 +333,7 @@ export default function Weighbridge() {
                         <span>{row.material_name ?? "-"}</span>
                       </div>
                     </TableCell>
-                    <TableCell>{row.silo_no != null ? `Silo ${row.silo_no}` : "-"}</TableCell>
+                    <TableCell>{row.silo_no != null ? `Silo ${row.silo_no}${row.silo_no >= 1001 && row.silo_no <= 1200 ? " (temp)" : ""}` : "-"}</TableCell>
                     <TableCell>{fmtTime(row.first_ts)}</TableCell>
                     <TableCell>{fmtTime(row.second_ts)}</TableCell>
                     <TableCell>

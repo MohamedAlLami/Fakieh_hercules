@@ -39,6 +39,10 @@ export interface SiloOption {
 export interface SilosForMaterial {
   matching: SiloOption[];
   unassigned: SiloOption[];
+  /** Temporary silos (1001-1200, Hercules only) that already hold this material. */
+  tempMatching: SiloOption[];
+  /** Temporary silos with no material yet. */
+  tempFree: SiloOption[];
 }
 
 export interface ScaleLiveReading {
@@ -120,7 +124,12 @@ export async function fetchSilosForMaterial(
 ): Promise<SilosForMaterial> {
   const res = await fetch(`${BASE}/silos?material_code=${encodeURIComponent(materialCode)}`, { signal });
   const data = await parseJson<Partial<SilosForMaterial>>(res);
-  return { matching: data.matching ?? [], unassigned: data.unassigned ?? [] };
+  return {
+    matching: data.matching ?? [],
+    unassigned: data.unassigned ?? [],
+    tempMatching: data.tempMatching ?? [],
+    tempFree: data.tempFree ?? [],
+  };
 }
 
 /** Retry the silo stock update of a completed order whose stock_status is 'pending'. */

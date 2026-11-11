@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { WaterSystemLayout } from "../../components/water-system/WaterSystemLayout";
 import { KPICard } from "../../components/water-system/KPICard";
-import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap, Printer } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, Filter, Database, Zap, Printer, Pencil } from "lucide-react";
 import asmLogo from "@/assets/Asm_Logo.png";
 import fakiehBrandLogo from "@/assets/fakiehlogo.webp";
 import herculesLogo from "@/assets/Hercules_New.png";
@@ -25,6 +25,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useSilos, useSilosPolling } from "../../contexts/SiloContext";
+import { usePolling } from "../../hooks/usePolling";
+import { fetchTempSilos, type TempSilo } from "../../api/tempSilos";
+import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
+
+const TEMP_GROUP = "temp";
+const TEMP_GROUP_LABEL = "Temporary silos (1001–1200)";
 
 // // ✅ Mock data
 // const mockSilos = [
@@ -107,6 +113,36 @@ export function Storage() {
     groupFilter: "all", // Hundreds group of the silo number (100, 200, ...)
   });
   const [printError, setPrintError] = useState<string | null>(null);
+
+  // Temporary silos 1001-1200: ground storage kept in Hercules only, never read from the PLC.
+  const [tempSilos, setTempSilos] = useState<TempSilo[]>([]);
+  const [tempError, setTempError] = useState<string | null>(null);
+  const [editTempSilo, setEditTempSilo] = useState<number | null>(null);
+  const loadTempSilos = async (signal?: AbortSignal) => {
+    try {
+      setTempSilos(await fetchTempSilos(signal));
+      setTempError(null);
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") return;
+      setTempError("Could not load the temporary silos");
+    }
+  };
+  usePolling((signal) => loadTempSilos(signal), 15000);
+  const allRows = [
+    ...allSilos.map((s) => ({ ...s, isTemp: false })),
+    ...tempSilos.map((t) => ({
+      bin_name: t.binName,
+      material_code: t.materialCode,
+      material_name: t.materialName,
+      hl_active: false,
+      lock_active: false,
+      quantity_kg: t.quantityKg as number | null | undefined,
+      dbSource: "TEMP",
+      dbType: "Temporary",
+      silo_no: t.siloNo as number | undefined,
+      isTemp: true,
+    })),
+  ];
   
   const syncWithPLC = async () => {
     try {
@@ -126,13 +162,13 @@ export function Storage() {
  
   // Get unique values for filters
   const uniqueMaterials = Array.from(
-    new Set(allSilos.map((item) => item.material_name).filter(name => name && name.trim() !== ""))
+    new Set(allRows.map((item) => item.material_name).filter(name => name && name.trim() !== ""))
   ).sort();
   const uniqueCodes = Array.from(
-    new Set(allSilos.map((item) => item.material_code).filter(code => code && code.trim() !== ""))
+    new Set(allRows.map((item) => item.material_code).filter(code => code && code.trim() !== ""))
   ).sort();
   const uniqueBins = Array.from(
-    new Set(allSilos.map((item) => item.bin_name).filter(name => name && name.trim() !== ""))
+    new Set(allRows.map((item) => item.bin_name).filter(name => name && name.trim() !== ""))
   ).sort();
 
   // Hundreds groups (100, 200, ...) that exist in the loaded data
@@ -146,7 +182,7 @@ export function Storage() {
   ).sort((a, b) => a - b);
 
   // Filter silos based on current filters
-  const filteredSilos = allSilos.filter((item) => {
+  const filteredSilos = allRows.filter((item) => {
     return (
       (filters.binName === "" ||
         item.bin_name.toLowerCase().includes(filters.binName.toLowerCase())) &&
@@ -163,8 +199,11 @@ export function Storage() {
       (filters.dbFilter === "all" ||
         item.dbSource === filters.dbFilter) &&
       (filters.groupFilter === "all" ||
-        ((item.silo_no ?? 0) > 0 &&
-          Math.floor((item.silo_no as number) / 100) * 100 === Number(filters.groupFilter)))
+        (filters.groupFilter === TEMP_GROUP
+          ? item.isTemp
+          : !item.isTemp &&
+            (item.silo_no ?? 0) > 0 &&
+            Math.floor((item.silo_no as number) / 100) * 100 === Number(filters.groupFilter)))
     );
   });
 
@@ -228,7 +267,9 @@ export function Storage() {
       const title =
         filters.groupFilter === "all"
           ? "Storage — all groups"
-          : `Storage — ${filters.groupFilter} group`;
+          : filters.groupFilter === TEMP_GROUP
+            ? `Storage — ${TEMP_GROUP_LABEL}`
+            : `Storage — ${filters.groupFilter} group`;
       const summary: string[] = [];
       if (filters.binName.trim()) summary.push(`Bin: ${filters.binName.trim()}`);
       if (filters.materialName && filters.materialName !== "all") summary.push(`Material: ${filters.materialName}`);
@@ -246,9 +287,9 @@ export function Storage() {
                 <td>${escapeHtml(silo.material_name || "—")}</td>
                 <td>${escapeHtml(silo.material_code || "—")}</td>
                 <td class="num">${escapeHtml(fmtQty(silo.quantity_kg ?? 0))}</td>
-                <td>${silo.hl_active ? "HIGH" : "NORMAL"}</td>
-                <td>${silo.lock_active ? "LOCKED" : "UNLOCKED"}</td>
-                <td>${silo.material_code || silo.material_name || silo.hl_active || silo.lock_active ? "ACTIVE" : "EMPTY"}</td>
+                <td>${silo.isTemp ? "—" : silo.hl_active ? "HIGH" : "NORMAL"}</td>
+                <td>${silo.isTemp ? "—" : silo.lock_active ? "LOCKED" : "UNLOCKED"}</td>
+                <td>${silo.material_code || silo.material_name || silo.hl_active || silo.lock_active ? "ACTIVE" : silo.isTemp ? "FREE" : "EMPTY"}</td>
               </tr>`)
         .join("");
 
@@ -386,7 +427,7 @@ export function Storage() {
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <Button 
-              onClick={() => { void fetchSilos() }}
+              onClick={() => { void fetchSilos(); void loadTempSilos(); }}
               variant="outline"
               className="text-sm border-slate-600 text-white light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
               disabled={loading}
@@ -413,6 +454,11 @@ export function Storage() {
             {error && (
               <div className="text-red-400 text-sm">
                 ⚠️ {error}
+              </div>
+            )}
+            {tempError && (
+              <div className="text-red-400 text-sm">
+                ⚠️ {tempError}
               </div>
             )}
             {printError && (
@@ -553,6 +599,7 @@ export function Storage() {
                     <SelectItem value="DB2">DB2 - Outloading</SelectItem>
                     <SelectItem value="DB3">DB3 - Main Storage</SelectItem>
                     <SelectItem value="DB5">DB5 - Qty Only</SelectItem>
+                    <SelectItem value="TEMP">Temporary - Hercules only</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -576,6 +623,7 @@ export function Storage() {
                         {group} group
                       </SelectItem>
                     ))}
+                    <SelectItem value={TEMP_GROUP}>{TEMP_GROUP_LABEL}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -602,7 +650,7 @@ export function Storage() {
                 Real-time Silo Monitoring
               </h3>
               <div className="text-sm text-slate-400">
-                Showing {filteredSilos.length} of {totalSilos} silos
+                Showing {filteredSilos.length} of {allRows.length} silos
               </div>
             </div>
           </div>
@@ -634,6 +682,7 @@ export function Storage() {
                     <TableHead className="text-white light:text-gray-900 font-semibold">
                       Status
                     </TableHead>
+                    <TableHead className="text-white light:text-gray-900 font-semibold w-20" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -674,7 +723,7 @@ export function Storage() {
                                 : "text-gray-400 light:text-gray-600 bg-gray-500/10 light:bg-gray-100"
                             }`}
                           >
-                            {silo.hl_active ? "HIGH" : "NORMAL"}
+                            {silo.isTemp ? "—" : silo.hl_active ? "HIGH" : "NORMAL"}
                           </span>
                         </TableCell>
                         <TableCell>
@@ -682,10 +731,12 @@ export function Storage() {
                             className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                               silo.lock_active
                                 ? "text-red-400 light:text-red-600 bg-red-500/10 light:bg-red-100"
-                                : "text-green-400 light:text-green-600 bg-green-500/10 light:bg-green-100"
+                                : silo.isTemp
+                                  ? "text-gray-400 light:text-gray-600 bg-gray-500/10 light:bg-gray-100"
+                                  : "text-green-400 light:text-green-600 bg-green-500/10 light:bg-green-100"
                             }`}
                           >
-                            {silo.lock_active ? "LOCKED" : "UNLOCKED"}
+                            {silo.isTemp ? "—" : silo.lock_active ? "LOCKED" : "UNLOCKED"}
                           </span>
                         </TableCell>
                         <TableCell>
@@ -696,8 +747,22 @@ export function Storage() {
                                 : "text-gray-400 light:text-gray-600 bg-gray-500/10 light:bg-gray-100"
                             }`}
                           >
-                            {isActive ? "ACTIVE" : "EMPTY"}
+                            {isActive ? "ACTIVE" : silo.isTemp ? "FREE" : "EMPTY"}
                           </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {silo.isTemp && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs border-cyan-600 text-cyan-400 light:text-blue-700 light:border-blue-300 hover:bg-cyan-600/20"
+                              onClick={() => setEditTempSilo(silo.silo_no ?? null)}
+                              data-testid={`temp-edit-${silo.silo_no}`}
+                            >
+                              <Pencil className="h-3 w-3 mr-1" />
+                              Edit
+                            </Button>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -708,7 +773,12 @@ export function Storage() {
           </div>
         </div>
 
-
+        <TempSiloDialog
+          open={editTempSilo != null}
+          onOpenChange={(o) => { if (!o) setEditTempSilo(null); }}
+          siloNo={editTempSilo}
+          onSaved={() => { void loadTempSilos(); }}
+        />
       </div>
     </WaterSystemLayout>
   );

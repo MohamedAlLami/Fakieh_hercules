@@ -6,6 +6,7 @@ import {
   BarChart3,
   Crosshair,
   Hourglass,
+  Layers,
   Package,
   RefreshCw,
   Scale,
@@ -45,6 +46,7 @@ import {
 import { API_BASE_URL } from "../../config/api";
 import { getSelectableMaterialCodes } from "../../constants/materialCodes";
 import truck3 from "@/assets/truck3.png";
+import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
@@ -86,6 +88,8 @@ function fmtWeight(kg: number | null | undefined) {
   return kg.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 }
 
+const NO_SILOS: SilosForMaterial = { matching: [], unassigned: [], tempMatching: [], tempFree: [] };
+
 function siloLabel(s: SiloOption) {
   const name = s.materialName ? ` — ${s.materialName}` : "";
   return `Silo ${s.siloNo}${name} — ${fmtWeight(s.quantityKg)} kg`;
@@ -108,8 +112,10 @@ export default function TruckEntry() {
   const [newTruckId, setNewTruckId] = useState("");
   const [newMaterialCode, setNewMaterialCode] = useState("");
   const [newSiloNo, setNewSiloNo] = useState("");
-  const [silos, setSilos] = useState<SilosForMaterial>({ matching: [], unassigned: [] });
+  const [silos, setSilos] = useState<SilosForMaterial>(NO_SILOS);
   const [silosState, setSilosState] = useState<"idle" | "loading" | "error">("idle");
+  const [silosReload, setSilosReload] = useState(0);
+  const [tempDialogOpen, setTempDialogOpen] = useState(false);
   const [newEntryFormKey, setNewEntryFormKey] = useState(0);
 
   const [liveReading, setLiveReading] = useState<ScaleLiveReading | null>(null);
@@ -145,14 +151,19 @@ export default function TruckEntry() {
 
   const selectedTruck = truckData.find((t) => String(t.id) === newTruckId);
   const selectedMaterial = selectableMaterials.find((m) => m.code === newMaterialCode);
-  const selectedSilo = [...silos.matching, ...silos.unassigned].find(
+  const selectedSilo = [
+    ...silos.matching,
+    ...silos.unassigned,
+    ...silos.tempMatching,
+    ...silos.tempFree,
+  ].find(
     (s) => String(s.siloNo) === newSiloNo
   );
 
   // Silo choices follow the chosen material.
   useEffect(() => {
     if (!newMaterialCode) {
-      setSilos({ matching: [], unassigned: [] });
+      setSilos(NO_SILOS);
       setSilosState("idle");
       return;
     }
@@ -165,11 +176,11 @@ export default function TruckEntry() {
       })
       .catch((err: unknown) => {
         if ((err as Error)?.name === "AbortError") return;
-        setSilos({ matching: [], unassigned: [] });
+        setSilos(NO_SILOS);
         setSilosState("error");
       });
     return () => ctrl.abort();
-  }, [newMaterialCode]);
+  }, [newMaterialCode, silosReload]);
 
   /** New entry ready: truck + material chosen — live Scale 1 before capture */
   const readyForNewEntry = Boolean(newTruckId && newMaterialCode) && !isExitPhase;
@@ -538,6 +549,17 @@ export default function TruckEntry() {
                 Select truck and material — live Scale 1 weight appears, then Capture Entry
               </p>
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="ml-auto h-8 bg-transparent border wb-border wb-text-sec hover:opacity-90 light:border-gray-300 light:bg-white"
+              onClick={() => setTempDialogOpen(true)}
+              data-testid="open-temp-silos"
+            >
+              <Layers className="h-3.5 w-3.5 mr-1.5" />
+              Temporary silos
+            </Button>
           </div>
 
           <div
@@ -636,7 +658,9 @@ export default function TruckEntry() {
                   )}
                   {silosState === "idle" &&
                     silos.matching.length === 0 &&
-                    silos.unassigned.length === 0 && (
+                    silos.unassigned.length === 0 &&
+                    silos.tempMatching.length === 0 &&
+                    silos.tempFree.length === 0 && (
                       <div className="px-3 py-2 text-xs wb-text-muted">No suitable silos</div>
                     )}
                   {silos.matching.length > 0 && (
@@ -659,6 +683,30 @@ export default function TruckEntry() {
                       {silos.unassigned.map((s) => (
                         <SelectItem key={s.siloNo} value={String(s.siloNo)}>
                           {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.tempMatching.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Temporary silos holding this material
+                      </SelectLabel>
+                      {silos.tempMatching.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {siloLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                  {silos.tempFree.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wider wb-text-muted">
+                        Free temporary silos (ground)
+                      </SelectLabel>
+                      {silos.tempFree.map((s) => (
+                        <SelectItem key={s.siloNo} value={String(s.siloNo)}>
+                          {`Silo ${s.siloNo} — free`}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -883,7 +931,7 @@ export default function TruckEntry() {
                 <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
                   {activeOrder
                     ? activeOrder.silo_no != null
-                      ? `Silo ${activeOrder.silo_no}`
+                      ? `Silo ${activeOrder.silo_no}${activeOrder.silo_no >= 1001 && activeOrder.silo_no <= 1200 ? " (temporary)" : ""}`
                       : "—"
                     : selectedSilo
                       ? siloLabel(selectedSilo)
@@ -1032,7 +1080,7 @@ export default function TruckEntry() {
                         {row.material_name ?? row.material_code}
                       </TableCell>
                       <TableCell className="text-sm wb-text-sec py-2.5">
-                        {row.silo_no != null ? `Silo ${row.silo_no}` : "—"}
+                        {row.silo_no != null ? `Silo ${row.silo_no}${row.silo_no >= 1001 && row.silo_no <= 1200 ? " (temp)" : ""}` : "—"}
                       </TableCell>
                       <TableCell className="py-2.5">
                         <span
@@ -1102,6 +1150,12 @@ export default function TruckEntry() {
             </Table>
           </div>
         </section>
+
+        <TempSiloDialog
+          open={tempDialogOpen}
+          onOpenChange={setTempDialogOpen}
+          onSaved={() => setSilosReload((n) => n + 1)}
+        />
 
         <AlertDialog
           open={!!deleteTarget}

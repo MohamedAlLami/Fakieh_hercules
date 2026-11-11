@@ -122,10 +122,21 @@ def list_silos_for_material():
         silos = silos_from_db_under_plc_prefix().get_json() or []
     except Exception as e:
         return jsonify({"error": "Failed to load silos", "detail": str(e)}), 502
-    return jsonify(classify_silos(silos, material_code)), 200
+    out = classify_silos(silos, material_code)
+    # Temporary silos 1001-1200 (ground storage, database only).
+    try:
+        from services import temp_silos
+        t = temp_silos.classify(temp_silos.list_all(), material_code)
+        out["tempMatching"], out["tempFree"] = t["matching"], t["free"]
+    except Exception:
+        out["tempMatching"], out["tempFree"] = [], []
+    return jsonify(out), 200
 
 
 def _silo_exists(silo_no: int) -> bool:
+    from services import temp_silos
+    if temp_silos.is_temp_silo(silo_no):
+        return temp_silos.get_one(silo_no) is not None
     from routes.plc_routes import _app_rows
     rows = _app_rows("SELECT 1 FROM public.silo_status WHERE silo_no = %(s)s", {"s": silo_no})
     return bool(rows)
@@ -142,7 +153,12 @@ def _run_stock_update(order: TruckWeighOrder, retry: bool = False):
     passes db_already_applied=True, so only the PLC write and status change remain.
     """
     try:
+        from services import temp_silos
         from services.silo_stock import NOT_CONFIRMED_NOTE, apply_stock_delta
+
+        if temp_silos.is_temp_silo(order.silo_no):
+            _run_temp_stock_update(order, retry)
+            return
 
         if retry:
             delta = float(order.stock_delta_kg)
@@ -175,6 +191,55 @@ def _run_stock_update(order: TruckWeighOrder, retry: bool = False):
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+
+def _run_temp_stock_update(order: TruckWeighOrder, retry: bool):
+    """Temporary silo (1001-1200): database only, never the PLC. Raises to the caller's handler."""
+    from services import temp_silos
+
+    if retry and order.stock_delta_kg is not None:
+        delta = float(order.stock_delta_kg)
+    else:
+        delta = float(order.first_weight_kg) - float(order.second_weight_kg)
+        order.stock_delta_kg = delta
+    if delta == 0:
+        order.stock_status = "skipped"
+        order.stock_note = "zero delta"
+        db.session.commit()
+        return
+    try:
+        before, after = temp_silos.apply_trip(
+            order.silo_no, delta, order.material_code, order.material_name or "", order.id
+        )
+    except temp_silos.TempSiloError as e:
+        order.stock_status = "pending"
+        order.stock_note = str(e)[:255]
+        db.session.commit()
+        return
+    order.stock_status = "applied"
+    order.stock_qty_before = before
+    order.stock_qty_after = after
+    order.stock_applied_at = _utcnow()
+    order.stock_note = temp_silos.TEMP_NOTE + (" (below zero)" if after < 0 else "")
+    db.session.commit()
+
+
+def _temp_silo_conflict(silo_no: int, material_code: str):
+    """Why a temporary silo cannot take this material, or None."""
+    from services import temp_silos
+
+    row = temp_silos.get_one(silo_no)
+    if row and row["materialCode"] and not temp_silos.same_material(row["materialCode"], material_code):
+        return f"Temporary silo {silo_no} holds material {row['materialCode']} {row['materialName']}".strip()
+    others = TruckWeighOrder.query.filter(
+        TruckWeighOrder.silo_no == silo_no,
+        TruckWeighOrder.status.in_(list(OPEN_STATUSES)),
+    ).all()
+    for o in others:
+        if not temp_silos.same_material(o.material_code, material_code):
+            return (f"Temporary silo {silo_no} is taken by open trip {o.ticket} "
+                    f"with material {o.material_code}")
+    return None
 
 
 @truck_entry_bp.route("/orders/<int:order_id>/apply-stock", methods=["POST"])
@@ -220,6 +285,14 @@ def create_order():
             return jsonify({"error": "Could not verify silo", "detail": str(e)}), 500
         if not exists:
             return jsonify({"error": f"Silo {silo_no} not found"}), 400
+        from services import temp_silos
+        if temp_silos.is_temp_silo(silo_no):
+            try:
+                conflict = _temp_silo_conflict(silo_no, material_code)
+            except Exception as e:
+                return jsonify({"error": "Could not verify silo", "detail": str(e)}), 500
+            if conflict:
+                return jsonify({"error": conflict}), 400
 
     truck = Truck.query.get(int(truck_id))
     if not truck:
