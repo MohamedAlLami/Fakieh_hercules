@@ -20,6 +20,9 @@ truck_entry_bp = Blueprint("truck_entry", __name__, url_prefix="/api/truck-entry
 TIMEZONE_NAME = BUSINESS_TZ_NAME
 
 
+LOADING_POINTS = (1, 2, 3)
+
+
 def _utcnow():
     return datetime.now(timezone.utc)
 
@@ -65,7 +68,8 @@ def _order_dict(order: TruckWeighOrder, truck_map=None, driver_map=None):
     d = driver_map.get(order.truck_id)
     return order.to_dict(
         truck_plate=getattr(t, "license", None) if t else None,
-        truck_driver=getattr(d, "name", None) if d else None,
+        # The driver chosen on the weighbridge for this trip wins over the truck's usual driver.
+        truck_driver=order.wb_driver_name or (getattr(d, "name", None) if d else None),
     )
 
 
@@ -291,6 +295,22 @@ def create_order():
                          f"not {material_code}",
             }), 400
 
+    # Optional driver (from Management > Drivers) and loading point (1, 2 or 3).
+    wb_driver = None
+    raw_driver = data.get("driver_id")
+    if raw_driver is not None and raw_driver != "":
+        if isinstance(raw_driver, bool) or not str(raw_driver).strip().isdigit():
+            return jsonify({"error": "driver_id must be a whole number"}), 400
+        wb_driver = Driver.query.get(int(str(raw_driver).strip()))
+        if wb_driver is None:
+            return jsonify({"error": f"Driver {raw_driver} not found"}), 400
+    loading_point = None
+    raw_lp = data.get("loading_point")
+    if raw_lp is not None and raw_lp != "":
+        if isinstance(raw_lp, bool) or not str(raw_lp).strip().isdigit() or int(str(raw_lp).strip()) not in LOADING_POINTS:
+            return jsonify({"error": "loading_point must be 1, 2 or 3"}), 400
+        loading_point = int(str(raw_lp).strip())
+
     if not material_code:
         return jsonify({"error": "material_code is required"}), 400
     if not is_valid_material_code(material_code):
@@ -344,6 +364,9 @@ def create_order():
         wb_order_no=wb_order["order_no"] if wb_order else None,
         wb_client_name=wb_order["client_name"] if wb_order else None,
         wb_order_qty_kg=wb_order["quantity_kg"] if wb_order else None,
+        wb_driver_id=wb_driver.id if wb_driver else None,
+        wb_driver_name=wb_driver.name if wb_driver else None,
+        loading_point=loading_point,
     )
     try:
         db.session.add(order)

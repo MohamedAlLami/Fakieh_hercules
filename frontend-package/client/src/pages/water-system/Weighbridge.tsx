@@ -172,6 +172,7 @@ export default function Weighbridge() {
       { header: "Driver", cell: (r) => r.truck_driver },
       { header: "Material", cell: (r) => `${r.material_code} ${r.material_name ?? ""}`.trim() },
       { header: "Silo", cell: siloText },
+      { header: "Loading Pt", cell: (r) => r.loading_point },
       { header: "IN time", cell: (r) => fmtTime(r.first_ts) },
       { header: "OUT time", cell: (r) => fmtTime(r.second_ts) },
       { header: "Ordered (kg)", cell: (r) => kg(r.order_quantity_kg), excel: (r) => raw(r.order_quantity_kg), numeric: true },
@@ -180,7 +181,7 @@ export default function Weighbridge() {
       { header: "NET (kg)", cell: (r) => kg(r.net_kg), excel: (r) => raw(r.net_kg), numeric: true },
     ];
     const label = `Total: ${rows.length} trip${rows.length === 1 ? "" : "s"}`;
-    const blanks = ["", "", "", "", "", "", "", "", "", "", ""];
+    const blanks = ["", "", "", "", "", "", "", "", "", "", "", ""];
     return { rows, columns, subtitles, net, label, blanks, kg };
   }
 
@@ -413,6 +414,7 @@ export default function Weighbridge() {
                   <TableHead>Driver</TableHead>
                   <TableHead>Material</TableHead>
                   <TableHead>Silo</TableHead>
+                  <TableHead>Loading Pt</TableHead>
                   <TableHead>IN time</TableHead>
                   <TableHead>OUT time</TableHead>
                   <TableHead>Ordered (kg)</TableHead>
@@ -452,6 +454,7 @@ export default function Weighbridge() {
                       </div>
                     </TableCell>
                     <TableCell>{row.silo_no != null ? `Silo ${row.silo_no}${row.silo_no >= 1001 && row.silo_no <= 1200 ? " (temp)" : ""}` : "-"}</TableCell>
+                    <TableCell>{row.loading_point ?? "-"}</TableCell>
                     <TableCell>{fmtTime(row.first_ts)}</TableCell>
                     <TableCell>{fmtTime(row.second_ts)}</TableCell>
                     <TableCell>
@@ -498,7 +501,7 @@ export default function Weighbridge() {
                 {filteredRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={15}
+                      colSpan={16}
                       className="text-center py-8 text-sm text-slate-400 light:text-gray-500"
                     >
                       {loading ? "Loading..." : `No completed trips on ${reportDate ?? selectedDate}`}

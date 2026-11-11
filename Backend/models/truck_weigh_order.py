@@ -36,6 +36,11 @@ class TruckWeighOrder(db.Model):
     wb_order_no = db.Column(db.Integer)
     wb_client_name = db.Column(db.String(200))
     wb_order_qty_kg = db.Column(db.Float)
+    # Driver and loading point chosen on the weighbridge for this trip (both optional).
+    # The driver's name is copied so the log keeps it if the driver list changes later.
+    wb_driver_id = db.Column(db.Integer)
+    wb_driver_name = db.Column(db.String(100))
+    loading_point = db.Column(db.Integer)
 
     def compute_net(self):
         if self.first_weight_kg is None or self.second_weight_kg is None:
@@ -78,6 +83,9 @@ class TruckWeighOrder(db.Model):
             "order_no": self.wb_order_no,
             "order_client_name": self.wb_client_name,
             "order_quantity_kg": self.wb_order_qty_kg,
+            "driver_id": self.wb_driver_id,
+            "driver_name": self.wb_driver_name,
+            "loading_point": self.loading_point,
         }
 
 
@@ -106,6 +114,9 @@ def ensure_truck_weigh_orders_table():
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_order_no INTEGER",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_client_name VARCHAR(200)",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_order_qty_kg DOUBLE PRECISION",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_driver_id INTEGER",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_driver_name VARCHAR(100)",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS loading_point INTEGER",
     ]
     try:
         for stmt in column_statements + index_statements:

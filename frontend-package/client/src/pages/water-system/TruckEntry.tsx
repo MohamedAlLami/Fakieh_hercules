@@ -8,11 +8,13 @@ import {
   ClipboardList,
   Hourglass,
   Layers,
+  MapPin,
   Package,
   RefreshCw,
   Scale,
   Trash2,
   Truck,
+  User,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -53,6 +55,7 @@ import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbr
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
+  fetchAllDrivers,
   fetchCompletedToday,
   fetchOpenOrders,
   fetchScaleLive,
@@ -60,6 +63,7 @@ import {
   fetchTruckWeighOrder,
   saveFirstWeight,
   saveSecondWeight,
+  type DriverOption,
   type ScaleLiveReading,
   type SilosForMaterial,
   type SiloOption,
@@ -117,6 +121,10 @@ export default function TruckEntry() {
   const [newSiloNo, setNewSiloNo] = useState("");
   // Weighbridge order (optional): gives the trip its product, client and ordered quantity.
   const [newOrderNo, setNewOrderNo] = useState("");
+  // Driver (from Management > Drivers) and loading point 1-3, both optional.
+  const [newDriverId, setNewDriverId] = useState("");
+  const [newLoadingPoint, setNewLoadingPoint] = useState("");
+  const [drivers, setDrivers] = useState<DriverOption[]>([]);
   const [wbOrders, setWbOrders] = useState<WeighbridgeOrder[]>([]);
   const [silos, setSilos] = useState<SilosForMaterial>(NO_SILOS);
   const [silosState, setSilosState] = useState<"idle" | "loading" | "error">("idle");
@@ -176,6 +184,27 @@ export default function TruckEntry() {
     [wbOrders]
   );
   const selectedOrder = wbOrders.find((o) => String(o.order_no) === newOrderNo) ?? null;
+
+  const driverOptions = useMemo(
+    () => [
+      { value: "", label: "No driver" },
+      ...drivers.map((d) => ({
+        value: String(d.id),
+        label: `${d.id} — ${d.name}${d.license_no ? ` — ${d.license_no}` : ""}`,
+      })),
+    ],
+    [drivers]
+  );
+  const selectedDriver = drivers.find((d) => String(d.id) === newDriverId) ?? null;
+  const loadingPointOptions = useMemo(
+    () => [
+      { value: "", label: "No loading point" },
+      { value: "1", label: "Loading point 1" },
+      { value: "2", label: "Loading point 2" },
+      { value: "3", label: "Loading point 3" },
+    ],
+    []
+  );
 
   const materialOptions = useMemo(
     () => selectableMaterials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
@@ -280,6 +309,9 @@ export default function TruckEntry() {
       // Open weighbridge orders for the Order Number field. The page works without them.
       fetchWeighbridgeOrders("open", signal)
         .then((r) => setWbOrders(r.orders))
+        .catch(() => undefined);
+      fetchAllDrivers(signal)
+        .then(setDrivers)
         .catch(() => undefined);
       setActiveOrder((prev) => {
         if (!prev) return null;
@@ -408,6 +440,8 @@ export default function TruckEntry() {
     setNewMaterialCode("");
     setNewSiloNo("");
     setNewOrderNo("");
+    setNewDriverId("");
+    setNewLoadingPoint("");
     setNewEntryFormKey((k) => k + 1);
   }
 
@@ -468,7 +502,9 @@ export default function TruckEntry() {
             truckId,
             newMaterialCode,
             Number(newSiloNo),
-            newOrderNo ? Number(newOrderNo) : null
+            newOrderNo ? Number(newOrderNo) : null,
+            newDriverId ? Number(newDriverId) : null,
+            newLoadingPoint ? Number(newLoadingPoint) : null
           );
         } catch (err: unknown) {
           const conflict = err as Error & { code?: string; orderId?: number };
@@ -610,7 +646,7 @@ export default function TruckEntry() {
 
           <div
             key={newEntryFormKey}
-            className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 items-end"
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3 items-end"
           >
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase tracking-wider wb-text-sec">
@@ -644,6 +680,11 @@ export default function TruckEntry() {
                 value={newTruckId}
                 onChange={(v) => {
                   setNewTruckId(v);
+                  // Propose the driver assigned to this truck; the operator can change it.
+                  const usual =
+                    drivers.find((d) => String(d.truck_id) === v && d.status === "Active") ??
+                    drivers.find((d) => String(d.truck_id) === v);
+                  setNewDriverId(usual ? String(usual.id) : "");
                   if (activeOrder?.status === "awaiting_first") clearActiveOrder();
                 }}
                 options={truckOptions}
@@ -753,6 +794,43 @@ export default function TruckEntry() {
                   )}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Driver (optional)
+              </label>
+              <SearchableSelect
+                value={newDriverId}
+                onChange={(v) => {
+                  setNewDriverId(v);
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={driverOptions}
+                placeholder="Type driver number or name"
+                disabled={isExitPhase}
+                icon={<User className="h-3.5 w-3.5" />}
+                testId="select-driver"
+                listMinWidth={340}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                Loading Point (optional)
+              </label>
+              <SearchableSelect
+                value={newLoadingPoint}
+                onChange={(v) => {
+                  setNewLoadingPoint(v);
+                  if (activeOrder?.status === "awaiting_first") clearActiveOrder();
+                }}
+                options={loadingPointOptions}
+                placeholder="1, 2 or 3"
+                disabled={isExitPhase}
+                icon={<MapPin className="h-3.5 w-3.5" />}
+                testId="select-loading-point"
+              />
             </div>
           </div>
         </section>
@@ -995,6 +1073,29 @@ export default function TruckEntry() {
                     : selectedSilo
                       ? siloLabel(selectedSilo)
                       : "—"}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2" data-testid="entry-driver-lp">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">Driver</label>
+                  <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                    {activeOrder
+                      ? activeOrder.driver_name
+                        ? `${activeOrder.driver_id} — ${activeOrder.driver_name}`
+                        : "—"
+                      : selectedDriver
+                        ? `${selectedDriver.id} — ${selectedDriver.name}`
+                        : "—"}
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] uppercase tracking-wider wb-text-sec">Loading Point</label>
+                  <div className="wb-input h-10 flex items-center px-3 text-sm wb-text truncate">
+                    {activeOrder
+                      ? activeOrder.loading_point ?? "—"
+                      : newLoadingPoint || "—"}
+                  </div>
                 </div>
               </div>
 

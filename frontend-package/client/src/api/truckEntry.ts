@@ -30,6 +30,33 @@ export interface TruckWeighOrder {
   order_no?: number | null;
   order_client_name?: string | null;
   order_quantity_kg?: number | null;
+  /** Driver and loading point chosen on the weighbridge for this trip (optional). */
+  driver_id?: number | null;
+  driver_name?: string | null;
+  loading_point?: number | null;
+}
+
+export interface DriverOption {
+  id: number;
+  name: string;
+  license_no?: string;
+  status?: string;
+  truck_id?: number | null;
+}
+
+/** Every driver from Management > Drivers, for the weighbridge dropdown. */
+export async function fetchAllDrivers(signal?: AbortSignal): Promise<DriverOption[]> {
+  const out: DriverOption[] = [];
+  let offset = 0;
+  for (let page = 0; page < 100; page++) {
+    const res = await fetch(`${API_BASE_URL}/trucks/drivers?limit=200&offset=${offset}`, { signal });
+    const data = await parseJson<{ items?: DriverOption[]; has_more?: boolean }>(res);
+    const items = data.items ?? [];
+    out.push(...items);
+    if (!data.has_more || items.length === 0) break;
+    offset += items.length;
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export interface SiloOption {
@@ -84,7 +111,9 @@ export async function createTruckWeighOrder(
   truckId: number,
   materialCode: string,
   siloNo?: number | null,
-  orderNo?: number | null
+  orderNo?: number | null,
+  driverId?: number | null,
+  loadingPoint?: number | null
 ): Promise<TruckWeighOrder> {
   const res = await fetch(`${BASE}/orders`, {
     method: "POST",
@@ -94,6 +123,8 @@ export async function createTruckWeighOrder(
       material_code: materialCode,
       ...(siloNo != null ? { silo_no: siloNo } : {}),
       ...(orderNo != null ? { order_no: orderNo } : {}),
+      ...(driverId != null ? { driver_id: driverId } : {}),
+      ...(loadingPoint != null ? { loading_point: loadingPoint } : {}),
     }),
   });
   const text = await res.text();
