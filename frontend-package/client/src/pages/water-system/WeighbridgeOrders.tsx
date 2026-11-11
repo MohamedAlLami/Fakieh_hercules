@@ -252,7 +252,7 @@ export default function WeighbridgeOrders(): JSX.Element {
           <div className="flex flex-col md:flex-row gap-3 w-full lg:w-auto flex-1">
             <Input
               placeholder="Search order number, product or client..."
-              className={`w-full md:flex-1 ${inputClass}`}
+              className={`w-full md:flex-1 md:min-w-[16rem] ${inputClass}`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               data-testid="orders-search"

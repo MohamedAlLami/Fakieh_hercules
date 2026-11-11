@@ -19,6 +19,8 @@ interface Props {
   disabled?: boolean;
   icon?: React.ReactNode;
   testId?: string;
+  /** Let the list be wider than the field when the rows are long (pixels). */
+  listMinWidth?: number;
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
@@ -36,6 +38,7 @@ export function SearchableSelect({
   disabled = false,
   icon,
   testId,
+  listMinWidth,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -159,7 +162,10 @@ export function SearchableSelect({
             if (anchorRef.current?.contains(e.target as Node)) e.preventDefault();
           }}
           className="wb-select-content wb-text z-50 rounded-md p-1 shadow-lg"
-          style={{ width: "var(--radix-popover-trigger-width)" }}
+          style={{
+            width: "var(--radix-popover-trigger-width)",
+            minWidth: listMinWidth ? `min(${listMinWidth}px, 92vw)` : undefined,
+          }}
         >
           <div
             ref={listRef}

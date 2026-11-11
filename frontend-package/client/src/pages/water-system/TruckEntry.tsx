@@ -633,6 +633,7 @@ export default function TruckEntry() {
                 disabled={isExitPhase}
                 icon={<ClipboardList className="h-3.5 w-3.5" />}
                 testId="select-order"
+                listMinWidth={520}
               />
             </div>
             <div className="space-y-1.5">
