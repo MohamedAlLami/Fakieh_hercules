@@ -4842,3 +4842,19 @@ main {
   background-color: #22c55e !important;
 }
 
+.pallet-live-status-badge[data-paused='true'] {
+  border-color: #d97706 !important;
+  background: #d97706 !important;
+  color: #ffffff !important;
+}
+
+:root.light .pallet-live-status-badge[data-paused='true'] {
+  border-color: #f59e0b !important;
+  background: #fef3c7 !important;
+  color: #92400e !important;
+}
+
+:root.light .pallet-live-status-badge[data-paused='true'] .pallet-live-status-dot {
+  background-color: #f59e0b !important;
+}
+

@@ -9,13 +9,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { CalendarIcon, Search, Filter, Download, RefreshCw, Clock, CheckCircle, XCircle, AlertCircle, Printer } from 'lucide-react'
+import { CalendarIcon, Search, Filter, Download, RefreshCw, Clock, CheckCircle, XCircle, AlertCircle, Printer, FileSpreadsheet } from 'lucide-react'
 import { format } from 'date-fns'
 import axios from 'axios'
 import { cn } from '@/lib/utils'
 import { API_BASE_URL } from '../../config/api'
-import { printTable, rowsToPrint, type PrintColumn } from '@/utils/printTable'
+import { printTable, rowsToPrint } from '@/utils/printTable'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { exportTableToExcel, type ExportColumn } from '@/utils/exportTable'
 
 const baseUrl = API_BASE_URL
 
@@ -535,14 +536,14 @@ export function OrderHistory() {
   const materialText = (code?: string, name?: string) => [code, name].filter(Boolean).join(' ') || '-'
   const siloText = (silo?: string, name?: string) => `Silo ${silo || '-'} ${name || '-'}`
 
-  const printColumns = (type: TabInfo['type']): PrintColumn<OrderData>[] => {
-    const qty: PrintColumn<OrderData> = { header: 'Quantity (KG)', numeric: true, cell: o => o.declaredQuantityKG || 0 }
-    const dest: PrintColumn<OrderData>[] = [
+  const printColumns = (type: TabInfo['type']): ExportColumn<OrderData>[] => {
+    const qty: ExportColumn<OrderData> = { header: 'Quantity (KG)', numeric: true, cell: o => o.declaredQuantityKG || 0, excel: o => Number(o.declaredQuantityKG) || 0 }
+    const dest: ExportColumn<OrderData>[] = [
       { header: 'Destination 1 (Material)', cell: o => siloText(o.destinationSilo1, o.destinationSilo1MaterialName) },
       { header: 'Destination 2 (Material)', cell: o => siloText(o.destinationSilo2, o.destinationSilo2MaterialName) },
     ]
-    const status: PrintColumn<OrderData> = { header: 'Status', cell: statusText }
-    const times: PrintColumn<OrderData>[] = [
+    const status: ExportColumn<OrderData> = { header: 'Status', cell: statusText }
+    const times: ExportColumn<OrderData>[] = [
       { header: 'Created', cell: o => formatDateTime(o.createdAt) },
       { header: 'Started', cell: o => formatDateTime(o.startedAt) },
       { header: 'Finished', cell: o => formatDateTime(o.finishedAt) },
@@ -575,9 +576,9 @@ export function OrderHistory() {
     ]
   }
 
-  const handlePrint = async () => {
-    if (!activeInfo) return
-    setPrintError(null)
+  // What gets printed or exported: the ticked rows, or every row shown when none is ticked.
+  const orderTable = () => {
+    if (!activeInfo) return null
     const rows = rowsToPrint(shownRows, selection.selected, rowId)
     const columns = printColumns(activeInfo.type)
     const subtitles: string[] = [activeInfo.title]
@@ -592,14 +593,37 @@ export function OrderHistory() {
     const total = Math.round(rows.reduce((sum, o) => sum + (Number(o.declaredQuantityKG) || 0), 0) * 100) / 100
     const qtyIndex = columns.findIndex(c => c.header === 'Quantity (KG)')
     const footer = columns.map((_, i) => (i === 0 ? `${rows.length} rows` : i === qtyIndex ? String(total) : ''))
+    const excelFooter = columns.map((_, i) => (i === 0 ? `${rows.length} rows` : i === qtyIndex ? total : ''))
+    return { rows, columns, subtitles, footer, excelFooter }
+  }
 
+  const handlePrint = async () => {
+    const t = orderTable()
+    if (!t || !activeInfo) return
+    setPrintError(null)
     const err = await printTable<OrderData>({
       title: 'Order History',
-      subtitles,
-      columns,
-      rows,
-      footer,
-      landscape: columns.length > 7,
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: t.rows,
+      footer: t.footer,
+      landscape: t.columns.length > 7,
+    })
+    if (err) setPrintError(err)
+  }
+
+  const handleExcel = async () => {
+    const t = orderTable()
+    if (!t || !activeInfo) return
+    setPrintError(null)
+    const err = await exportTableToExcel<OrderData>({
+      title: 'Order History',
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: t.rows,
+      footer: t.excelFooter,
+      filename: `order-history_${activeTab}`,
+      sheetName: activeInfo.title.slice(0, 31),
     })
     if (err) setPrintError(err)
   }
@@ -744,9 +768,14 @@ export function OrderHistory() {
                   <RefreshCw className="h-4 w-4" />
                 </Button>
 
-                <Button onClick={handlePrint} disabled={shownRows.length === 0} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300">
+                <Button onClick={handlePrint} disabled={shownRows.length === 0} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300" data-testid={`order-history-${activeTab}-print`}>
                   <Printer className="mr-2 h-4 w-4" />
                   {selection.count > 0 ? `Print selected (${selection.count})` : 'Print'}
+                </Button>
+
+                <Button onClick={handleExcel} disabled={shownRows.length === 0} variant="outline" className="bg-slate-700/50 light:bg-gray-100 border-slate-600 light:border-gray-300" data-testid={`order-history-${activeTab}-excel`}>
+                  <FileSpreadsheet className="mr-2 h-4 w-4" />
+                  {selection.count > 0 ? `Export selected (${selection.count})` : 'Export Excel'}
                 </Button>
               </div>
             </div>

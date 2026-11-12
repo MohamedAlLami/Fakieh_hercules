@@ -6,10 +6,12 @@ import {
   BarChart3,
   Crosshair,
   ClipboardList,
+  FileSpreadsheet,
   Hourglass,
   Layers,
   MapPin,
   Package,
+  Printer,
   RefreshCw,
   Scale,
   Trash2,
@@ -52,6 +54,8 @@ import truck3 from "@/assets/truck3.png";
 import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import { SearchableSelect } from "../../components/water-system/SearchableSelect";
 import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbridgeOrders";
+import { printTable } from "../../utils/printTable";
+import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 import {
   createTruckWeighOrder,
   deleteTruckWeighOrder,
@@ -551,6 +555,63 @@ export default function TruckEntry() {
 
   const showTruckVisual = Boolean(previewTruck || activeOrder);
   const showInMode = !isExitPhase;
+
+  // Print / Excel of the Open Trips table: same rows and columns as shown, without the Action column.
+  function openTripsTable() {
+    const exitKgOf = (row: TruckWeighOrder) =>
+      activeOrder?.id === row.id && isExitPhase && liveKg != null ? liveKg : row.second_weight_kg ?? null;
+    const raw = (n?: number | null) => (n != null && !Number.isNaN(n) ? Math.round(n) : null);
+    const statusText = (row: TruckWeighOrder) =>
+      activeOrder?.id === row.id && activeScaleId
+        ? "On Scale"
+        : row.status === "awaiting_second"
+          ? "Exit Pending"
+          : "Entry Pending";
+    const columns: ExportColumn<TruckWeighOrder>[] = [
+      { header: "Time", cell: (r) => fmtTime(rowTimestamp(r)) },
+      { header: "Order", cell: (r) => (r.order_no != null ? r.order_no : "—") },
+      { header: "Truck No", cell: (r) => r.truck_plate ?? `Truck ${r.truck_id}` },
+      { header: "Material", cell: (r) => r.material_name ?? r.material_code },
+      {
+        header: "Silo",
+        cell: (r) =>
+          r.silo_no != null
+            ? `Silo ${r.silo_no}${r.silo_no >= 1001 && r.silo_no <= 1200 ? " (temp)" : ""}`
+            : "—",
+      },
+      { header: "Type", cell: (r) => (r.status === "awaiting_first" ? "IN" : "OUT") },
+      { header: "Entry Weight (kg)", cell: (r) => fmtWeight(r.first_weight_kg ?? null), excel: (r) => raw(r.first_weight_kg), numeric: true },
+      { header: "Exit Weight (kg)", cell: (r) => fmtWeight(exitKgOf(r)), excel: (r) => raw(exitKgOf(r)), numeric: true },
+      { header: "Status", cell: statusText },
+    ];
+    const subtitles = [`${openTripRows.length} open trip${openTripRows.length === 1 ? "" : "s"}`];
+    return { columns, subtitles };
+  }
+
+  async function handleOpenTripsPrint() {
+    const t = openTripsTable();
+    const err = await printTable({
+      title: "Open Trips — On Site",
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: openTripRows,
+      landscape: true,
+    });
+    if (err) setErrorMsg(err);
+  }
+
+  async function handleOpenTripsExcel() {
+    const t = openTripsTable();
+    const err = await exportTableToExcel({
+      title: "Open Trips — On Site",
+      subtitles: t.subtitles,
+      columns: t.columns,
+      rows: openTripRows,
+      filename: "open-trips",
+      sheetName: "Open Trips",
+    });
+    if (err) setErrorMsg(err);
+  }
 
   function statusBadge(row: TruckWeighOrder) {
     if (activeOrder?.id === row.id && activeScaleId) {
@@ -1167,6 +1228,28 @@ export default function TruckEntry() {
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Refresh
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { void handleOpenTripsPrint() }}
+                disabled={openTripRows.length === 0}
+                className="h-7 gap-1 wb-text-sec hover:opacity-90"
+                data-testid="open-trips-print"
+              >
+                <Printer className="h-3.5 w-3.5" />
+                Print
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { void handleOpenTripsExcel() }}
+                disabled={openTripRows.length === 0}
+                className="h-7 gap-1 wb-text-sec hover:opacity-90"
+                data-testid="open-trips-excel"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                Export Excel
               </Button>
               <Link
                 href="/fakieh/weighbridge"

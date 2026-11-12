@@ -3,11 +3,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ClipboardList, Pencil, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react'
+import { ClipboardList, Pencil, FileSpreadsheet, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react'
 import { SearchableSelect } from '../../components/water-system/SearchableSelect'
 import { getSelectableMaterialCodes } from '../../constants/materialCodes'
 import { useRowSelection } from '../../hooks/useRowSelection'
 import { printTable, rowsToPrint } from '../../utils/printTable'
+import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
 import {
   createWeighbridgeOrder,
   deleteWeighbridgeOrder,
@@ -193,29 +194,51 @@ export default function WeighbridgeOrders(): JSX.Element {
     }
   }
 
-  const handlePrint = async () => {
+  // What gets printed or exported: the ticked orders, or every order shown when none is ticked.
+  const ordersTable = () => {
     const rows = rowsToPrint(shown, selection.selected, (o) => o.id)
     const subtitles: string[] = []
     if (statusFilter !== 'all') subtitles.push(`Status: ${orderStatusLabel(statusFilter as WeighbridgeOrder['status'])}`)
     if (search.trim()) subtitles.push(`Search: ${search.trim()}`)
     if (selection.count > 0) subtitles.push(`${rows.length} of ${shown.length} orders selected`)
     const total = rows.reduce((s, o) => s + o.quantity_kg, 0)
+    const columns: ExportColumn<WeighbridgeOrder>[] = [
+      { header: 'Order No', cell: (o) => o.order_no },
+      { header: 'Product Code', cell: (o) => o.product_code },
+      { header: 'Product Name', cell: (o) => o.product_name },
+      { header: 'Quantity (kg)', cell: (o) => fmtKg(o.quantity_kg), excel: (o) => o.quantity_kg, numeric: true },
+      { header: 'Client', cell: (o) => o.client_name },
+      { header: 'Status', cell: (o) => orderStatusLabel(o.status) },
+      { header: 'Created', cell: (o) => fmtDateTime(o.created_at) },
+      { header: 'Closed', cell: (o) => fmtDateTime(o.closed_at) },
+    ]
+    const label = `Total: ${rows.length} order${rows.length === 1 ? '' : 's'}`
+    return { rows, subtitles, total, columns, label }
+  }
+
+  const handlePrint = async () => {
+    const t = ordersTable()
     const err = await printTable({
       title: 'Weighbridge Orders',
-      subtitles,
-      rows,
-      columns: [
-        { header: 'Order No', cell: (o) => o.order_no },
-        { header: 'Product Code', cell: (o) => o.product_code },
-        { header: 'Product Name', cell: (o) => o.product_name },
-        { header: 'Quantity (kg)', cell: (o) => fmtKg(o.quantity_kg), numeric: true },
-        { header: 'Client', cell: (o) => o.client_name },
-        { header: 'Status', cell: (o) => orderStatusLabel(o.status) },
-        { header: 'Created', cell: (o) => fmtDateTime(o.created_at) },
-        { header: 'Closed', cell: (o) => fmtDateTime(o.closed_at) },
-      ],
-      footer: [`Total: ${rows.length} order${rows.length === 1 ? '' : 's'}`, '', '', fmtKg(total), '', '', '', ''],
+      subtitles: t.subtitles,
+      rows: t.rows,
+      columns: t.columns,
+      footer: [t.label, '', '', fmtKg(t.total), '', '', '', ''],
       landscape: true,
+    })
+    setError(err)
+  }
+
+  const handleExcel = async () => {
+    const t = ordersTable()
+    const err = await exportTableToExcel({
+      title: 'Weighbridge Orders',
+      subtitles: t.subtitles,
+      rows: t.rows,
+      columns: t.columns,
+      footer: [t.label, '', '', t.total, '', '', '', ''],
+      filename: 'weighbridge-orders',
+      sheetName: 'Weighbridge Orders',
     })
     setError(err)
   }
@@ -287,6 +310,16 @@ export default function WeighbridgeOrders(): JSX.Element {
             >
               <Printer className="h-4 w-4 mr-2" />
               {selection.count > 0 ? `Print selected (${selection.count})` : 'Print'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void handleExcel()}
+              disabled={shown.length === 0}
+              className="border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+              data-testid="wb-orders-excel"
+            >
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              {selection.count > 0 ? `Export selected (${selection.count})` : 'Export Excel'}
             </Button>
             <Button
               onClick={openAdd}

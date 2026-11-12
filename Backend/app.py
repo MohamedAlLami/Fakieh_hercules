@@ -194,6 +194,12 @@ if __name__ == '__main__':
             print(f"Truck weigh orders migration skipped: {_truck_weigh_err}")
 
         try:
+            from models.pallet_report import ensure_pallet_run_columns
+            ensure_pallet_run_columns()
+        except Exception as _pallet_cols_err:
+            print(f"Pallet run column migration skipped: {_pallet_cols_err}")
+
+        try:
             from models.order_queue import ensure_order_queue_table
             ensure_order_queue_table()
         except Exception as _order_queue_err:

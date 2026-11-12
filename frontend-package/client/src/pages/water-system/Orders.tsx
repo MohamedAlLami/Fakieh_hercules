@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { WaterSystemLayout } from '../../components/water-system/WaterSystemLayout'
-import { Truck, Package, Calendar, MapPin, CheckCircle, Clock, FileText, Search, RefreshCw, X, Radio } from 'lucide-react'
+import { Truck, Package, Calendar, MapPin, CheckCircle, Clock, FileText, Search, RefreshCw, X, Radio, Printer, FileSpreadsheet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -19,6 +19,9 @@ import {
   formatDestSelLabel,
   isOutloadingHighSilo,
 } from '../../utils/outloadingSilos'
+import { SearchableSelect, type SearchableOption } from '../../components/water-system/SearchableSelect'
+import { printTable } from '../../utils/printTable'
+import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
 import { getSelectableMaterialCodes, getMaterialNameFromCode } from '../../constants/materialCodes'
 import { RfidAssignModal, orderRefLabelFromActiveTab } from '../../components/water-system/RfidAssignModal'
 
@@ -949,6 +952,124 @@ export function Orders() {
     }
   }
 
+  // ---- Print / Export Excel for the tables on this page ----
+  const siloLabel = (silo: any) => `Silo ${silo || '-'} - ${getMaterialNameForSilo(silo)}`;
+  const qtyNum = (v: any) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+  const qtyCol = (get: (r: any) => any): ExportColumn<any> => ({
+    header: 'Declared Quantity_KG',
+    cell: (r) => String(get(r) ?? ''),
+    excel: (r) => qtyNum(get(r)),
+    numeric: true,
+  });
+
+  const liveColumns = (kind: 'intake' | 'outloading' | 'bulk' | 'pit'): ExportColumn<any>[] => {
+    const d1: ExportColumn<any> = { header: 'Destination 1 (Material)', cell: (r) => siloLabel(r.destinationSilo1) };
+    const d2: ExportColumn<any> = { header: 'Destination 2 (Material)', cell: (r) => siloLabel(r.destinationSilo2) };
+    const active: ExportColumn<any> = { header: 'Active Destination (Material)', cell: (r) => siloLabel(r.activeDestination) };
+    if (kind === 'bulk') {
+      return [
+        { header: 'Source Silo (Material)', cell: (r) => siloLabel(r.sourceSilo) },
+        d1, d2,
+        { header: 'CC25 Sel', cell: (r) => r.cc25Sel || '-' },
+        { ...qtyCol((r) => r.declaredQuantityKG || 0), header: 'Weight Quantity' },
+        { header: 'Scale Sel', cell: (r) => r.scaleSel || '-' },
+        { header: 'Status', cell: (r) => r.statusWord || 'Unknown' },
+      ];
+    }
+    if (kind === 'pit') {
+      return [
+        { header: 'Pit No', cell: (r) => r.pitNo || '-' },
+        { header: 'Raw Code', cell: (r) => r.rawCode || '-' },
+        d1, d2,
+        { ...qtyCol((r) => r.declaredQuantityKG || 0), header: 'Weight Quantity' },
+        { header: 'Scale Sel', cell: (r) => r.scaleSel || '-' },
+        { header: 'Status', cell: (r) => r.statusWord || 'Unknown' },
+      ];
+    }
+    const cols: ExportColumn<any>[] = [
+      { header: 'RFID', cell: (r) => r.badgeNo },
+      { header: 'Source/Line Material', cell: (r) => `${r.sourceMaterialCode || '-'} ${getMaterialNameFromCode(r.sourceMaterialCode)}`.trim() },
+      qtyCol((r) => r.declaredQuantityKG),
+    ];
+    if (kind === 'outloading') cols.push({ header: 'Dest. Selection', cell: (r) => formatDestSelLabel(r.destSel) });
+    cols.push(d1, d2, active, { header: 'Status Word', cell: (r) => r.statusWord });
+    return cols;
+  };
+
+  const waitingColumns = (fam: string): ExportColumn<any>[] => {
+    const d1: ExportColumn<any> = { header: 'Destination 1 (Material)', cell: (r) => siloLabel(r.destinationSilo1) };
+    const d2: ExportColumn<any> = { header: 'Destination 2 (Material)', cell: (r) => siloLabel(r.destinationSilo2) };
+    const status: ExportColumn<any> = { header: fam === 'bulk' || fam === 'pit' ? 'Status' : 'Status Word', cell: (r) => r.queueStatus };
+    if (fam === 'bulk') {
+      return [
+        { header: 'Source Silo (Material)', cell: (r) => siloLabel(r.sourceSilo) },
+        d1, d2,
+        { header: 'CC25 Sel', cell: (r) => r.cc25Sel || '-' },
+        { ...qtyCol((r) => r.declaredQuantityKG || 0), header: 'Weight Quantity' },
+        { header: 'Scale Sel', cell: (r) => r.scaleSel || '-' },
+        status,
+      ];
+    }
+    if (fam === 'pit') {
+      return [
+        { header: 'Pit No', cell: (r) => r.pitNo || '-' },
+        { header: 'Raw Code', cell: (r) => r.rawCode || r.materialCode || '-' },
+        d1, d2,
+        { ...qtyCol((r) => r.declaredQuantityKG || 0), header: 'Weight Quantity' },
+        { header: 'Scale Sel', cell: (r) => r.scaleSel || '-' },
+        status,
+      ];
+    }
+    const cols: ExportColumn<any>[] = [
+      { header: 'RFID', cell: (r) => r.rfidNumber || r.badgeNo || '-' },
+      { header: 'Source/Line Material', cell: (r) => `${r.materialCode || '-'} ${r.materialName || getMaterialNameFromCode(r.materialCode)}`.trim() },
+      { ...qtyCol((r) => r.declaredQuantityKG || 0) },
+    ];
+    if (fam === 'outloading') cols.push({ header: 'Dest. Selection', cell: (r) => formatDestSelLabel(r.destSel) });
+    cols.push(d1, d2, { header: 'Active Destination (Material)', cell: (r) => siloLabel(r.activeDestination) }, status);
+    return cols;
+  };
+
+  const exportSlug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  const renderExportButtons = (title: string, columns: ExportColumn<any>[], rows: any[]) => {
+    const slug = exportSlug(title);
+    const subtitles = [`Rows shown: ${rows.length}`];
+    const fail = (what: string, err: string | null) => {
+      if (err) toast({ title: `${what} failed`, description: err, variant: 'destructive' });
+    };
+    return (
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={rows.length === 0}
+          className={`${ORDER_BTN_SM} gap-1`}
+          data-testid={`live-orders-${slug}-print`}
+          onClick={() => {
+            void printTable({ title, subtitles, columns, rows, landscape: true }).then((err) => fail('Print', err));
+          }}
+        >
+          <Printer className="h-3.5 w-3.5" /> Print
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={rows.length === 0}
+          className={`${ORDER_BTN_SM} gap-1`}
+          data-testid={`live-orders-${slug}-excel`}
+          onClick={() => {
+            void exportTableToExcel({ title, subtitles, columns, rows, filename: `live-orders_${slug}`, sheetName: title }).then((err) => fail('Export', err));
+          }}
+        >
+          <FileSpreadsheet className="h-3.5 w-3.5" /> Export Excel
+        </Button>
+      </div>
+    );
+  };
+
   // Helper function to render table for intake lines
   const renderIntakeTable = (data: any[], title: string, line: string) => {
     const lineNo = Number(line.split('-').pop()) || 1;
@@ -956,8 +1077,9 @@ export function Orders() {
 
     return (
     <div className="bg-slate-950/50 light:bg-white border border-slate-700/30 light:border-gray-200 rounded-lg backdrop-blur-sm light:shadow-lg">
-      <div className="p-6 border-b border-slate-700/30 light:border-gray-200">
+      <div className="p-6 border-b border-slate-700/30 light:border-gray-200 flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-lg font-semibold text-white light:text-gray-900">{title}</h3>
+        {renderExportButtons(title, liveColumns('intake'), Array.isArray(currentData) ? currentData : [])}
       </div>
       <div className="p-6">
         <div className="rounded-md border border-slate-700/30 light:border-gray-200">
@@ -1037,8 +1159,9 @@ export function Orders() {
 
     return (
     <div className="bg-slate-950/50 light:bg-white border border-slate-700/30 light:border-gray-200 rounded-lg backdrop-blur-sm light:shadow-lg">
-      <div className="p-6 border-b border-slate-700/30 light:border-gray-200">
+      <div className="p-6 border-b border-slate-700/30 light:border-gray-200 flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-lg font-semibold text-white light:text-gray-900">{title}</h3>
+        {renderExportButtons(title, liveColumns('outloading'), Array.isArray(currentData) ? currentData : [])}
       </div>
       <div className="p-6">
         <div className="rounded-md border border-slate-700/30 light:border-gray-200">
@@ -1121,8 +1244,9 @@ export function Orders() {
 
     return (
     <div className="bg-slate-950/50 light:bg-white border border-slate-700/30 light:border-gray-200 rounded-lg backdrop-blur-sm light:shadow-lg">
-      <div className="p-6 border-b border-slate-700/30 light:border-gray-200">
+      <div className="p-6 border-b border-slate-700/30 light:border-gray-200 flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-lg font-semibold text-white light:text-gray-900">{title}</h3>
+        {renderExportButtons(title, liveColumns('bulk'), Array.isArray(currentData) ? currentData : [])}
       </div>
       <div className="p-6">
         <div className="rounded-md border border-slate-700/30 light:border-gray-200 overflow-x-auto">
@@ -1196,8 +1320,9 @@ export function Orders() {
 
     return (
     <div className="bg-slate-950/50 light:bg-white border border-slate-700/30 light:border-gray-200 rounded-lg backdrop-blur-sm light:shadow-lg">
-      <div className="p-6 border-b border-slate-700/30 light:border-gray-200">
+      <div className="p-6 border-b border-slate-700/30 light:border-gray-200 flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-lg font-semibold text-white light:text-gray-900">{title}</h3>
+        {renderExportButtons(title, liveColumns('pit'), Array.isArray(currentData) ? currentData : [])}
       </div>
       <div className="p-6">
         <div className="rounded-md border border-slate-700/30 light:border-gray-200 overflow-x-auto">
@@ -1443,6 +1568,7 @@ export function Orders() {
               ({waiting.length} waiting{dispatched.length ? `, ${dispatched.length} in progress above` : ''})
             </span>
           </h3>
+          {renderExportButtons(`Waiting Orders - ${tab}`, waitingColumns(fam), waiting)}
         </div>
         <div className="p-6">
           {waiting.length === 0 ? (
@@ -1692,62 +1818,53 @@ export function Orders() {
                     return (
                     <div key={field.name} className="flex flex-col">
                       <label className="block text-slate-300 mb-1 text-xs font-medium">{labelWithCount}</label>
-                      {field.type === 'select' ? (
-                        <Select
-                          value={field.name === 'destSel' ? String(formData.destSel ?? '0') : String(formData[field.name] || '')}
-                          onValueChange={(value) => {
-                            const newFormData = { ...formData, [field.name]: value };
-                            
-                            // If changing destinationSilo1, clear destinationSilo2 if it's the same
-                            if (field.name === 'destinationSilo1' && formData.destinationSilo2 === value) {
-                              newFormData.destinationSilo2 = '';
-                            }
-                            
-                            setFormData(newFormData);
-                          }}
-                        >
-                          <SelectTrigger className="bg-slate-800/70 light:bg-white border-slate-600 light:border-gray-200 text-white light:text-gray-900 w-full h-8 text-sm">
-                            <SelectValue placeholder={`Select ${field.label}`} />
-                          </SelectTrigger>
-                          <SelectContent className="bg-slate-800 light:bg-white border-slate-600 light:border-gray-200 max-h-72">
-                            {field.name !== 'destSel' && (
-                              <SelectItem value="none">None</SelectItem>
-                            )}
-                            {field.name === 'badgeNo' ? (
-                              // Only available RFID tags: not locked in the queue and not
-                              // currently loaded on a live PLC order.
-                              (() => {
-                                const inUse = getInUseRfids();
-                                const available = rfidConfigs.filter(
-                                  (rfid) => !rfid.rfid_used && !inUse.has(String(rfid.rfid_number))
-                                );
-                                if (available.length === 0) {
-                                  return <SelectItem value="none" disabled>No RFID available</SelectItem>;
-                                }
-                                return available.map((rfid) => (
-                                  <SelectItem key={rfid.id} value={rfid.rfid_number}>
-                                    {rfid.rfid_number} (Available)
-                                  </SelectItem>
-                                ));
-                              })()
-                            ) : field.name === 'destSel' ? (
-                              <>
+{field.type === 'select' ? (() => {
+                        const handleSelectChange = (value: string) => {
+                          const newFormData = { ...formData, [field.name]: value };
+                          // If changing destinationSilo1, clear destinationSilo2 if it's the same
+                          if (field.name === 'destinationSilo1' && formData.destinationSilo2 === value) {
+                            newFormData.destinationSilo2 = '';
+                          }
+                          setFormData(newFormData);
+                        };
+                        if (field.name === 'destSel') {
+                          return (
+                            <Select
+                              value={String(formData.destSel ?? '0')}
+                              onValueChange={handleSelectChange}
+                            >
+                              <SelectTrigger className="bg-slate-800/70 light:bg-white border-slate-600 light:border-gray-200 text-white light:text-gray-900 w-full h-8 text-sm">
+                                <SelectValue placeholder={`Select ${field.label}`} />
+                              </SelectTrigger>
+                              <SelectContent className="bg-slate-800 light:bg-white border-slate-600 light:border-gray-200 max-h-72">
                                 <SelectItem value="0">Bulk</SelectItem>
                                 <SelectItem value="1">Packing</SelectItem>
-                              </>
-                            ) : field.name === 'sourceMaterialCode' || field.name === 'rawCode' ? (
-                              // Material codes dropdown (for both sourceMaterialCode and rawCode)
-                              materialCodes.map((material) => (
-                                <SelectItem key={material.code} value={material.code}>
-                                  {material.code} - {material.name}
-                                </SelectItem>
-                              ))
-     ) : field.name === 'pitNo' ? (
-       // PIT Number is now a simple text input - no dropdown needed
-       null
-                              ) : (
-                                // Get available silos based on order type and filter by status and material
-                              (() => {
+                              </SelectContent>
+                            </Select>
+                          );
+                        }
+                        const selectOptions: SearchableOption[] = [{ value: 'none', label: 'None' }];
+                        let selectPlaceholder = `Select ${field.label}`;
+                        if (field.name === 'badgeNo') {
+                          // Only available RFID tags: not locked in the queue and not
+                          // currently loaded on a live PLC order.
+                          const inUse = getInUseRfids();
+                          const available = rfidConfigs.filter(
+                            (rfid) => !rfid.rfid_used && !inUse.has(String(rfid.rfid_number))
+                          );
+                          if (available.length === 0) {
+                            selectPlaceholder = 'No RFID available';
+                          }
+                          available.forEach((rfid) => {
+                            selectOptions.push({ value: String(rfid.rfid_number), label: `${rfid.rfid_number} (Available)` });
+                          });
+                        } else if (field.name === 'sourceMaterialCode' || field.name === 'rawCode') {
+                          // Material codes dropdown (for both sourceMaterialCode and rawCode)
+                          materialCodes.forEach((material) => {
+                            selectOptions.push({ value: material.code, label: `${material.code} - ${material.name}` });
+                          });
+                        } else if (field.name !== 'pitNo') {
+                          // Get available silos based on order type and filter by status and material
                                 let availableSilos = [];
                                 
                                 // Determine which silos to show based on field name and order type
@@ -1941,30 +2058,32 @@ export function Orders() {
                                   });
                                 }
                                 
-                                return availableSilos.map((silo) => {
-                                  const siloNumber = silo.bin_name.split(' ')[1] || 'unknown';
-                                  const materialInfo = silo.material_name || silo.material_code || 'No Material';
-                                  const allSilosList = getAvailableSilos();
-                                  const statusText =
-                                    orderType === 'outloading'
-                                      ? getOutloadingSiloStatusSuffix(silo, allSilosList)
-                                      : silo.lock_active
-                                        ? ' (Locked)'
-                                        : silo.hl_active
-                                          ? ' (High Level)'
-                                          : ' (Available)';
-                                  
-                                  return (
-                                    <SelectItem key={silo.bin_name} value={siloNumber}>
-                                      {silo.bin_name} - {materialInfo}{statusText}
-                                    </SelectItem>
-                                  );
-                                });
-                              })()
-                            )}
-                          </SelectContent>
-                        </Select>
-                      ) : (
+                          availableSilos.forEach((silo: any) => {
+                            const siloNumber = silo.bin_name.split(' ')[1] || 'unknown';
+                            const materialInfo = silo.material_name || silo.material_code || 'No Material';
+                            const allSilosList = getAvailableSilos();
+                            const statusText =
+                              orderType === 'outloading'
+                                ? getOutloadingSiloStatusSuffix(silo, allSilosList)
+                                : silo.lock_active
+                                  ? ' (Locked)'
+                                  : silo.hl_active
+                                    ? ' (High Level)'
+                                    : ' (Available)';
+                            selectOptions.push({ value: siloNumber, label: `${silo.bin_name} - ${materialInfo}${statusText}` });
+                          });
+                        }
+                        return (
+                          <SearchableSelect
+                            testId={`live-orders-field-${field.name}`}
+                            value={String(formData[field.name] || '')}
+                            onChange={handleSelectChange}
+                            options={selectOptions}
+                            placeholder={selectPlaceholder}
+                            listMinWidth={field.name.includes('Silo') ? 320 : undefined}
+                          />
+                        );
+                      })() : (
                       <Input
                         type={field.type}
                         value={formData[field.name] || ''}
@@ -2190,18 +2309,16 @@ export function Orders() {
                     <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                       Source Material Code
                     </label>
-                    <select
-                      value={editFormData.sourceMaterialCode || ''}
-                      onChange={(e) => setEditFormData({...editFormData, sourceMaterialCode: e.target.value})}
-                      className="text-sm text-gray-900 dark:text-white bg-gray-50 dark:bg-slate-800 p-2 rounded border border-gray-200 dark:border-slate-600 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                    >
-                      <option value="">Select Material</option>
-                      {materialCodes.map((material) => (
-                        <option key={material.code} value={material.code}>
-                          {material.code} - {material.name}
-                        </option>
-                      ))}
-                    </select>
+                    <SearchableSelect
+                      testId="live-orders-edit-material"
+                      value={String(editFormData.sourceMaterialCode || '')}
+                      onChange={(v) => setEditFormData({...editFormData, sourceMaterialCode: v})}
+                      placeholder="Select Material"
+                      options={[
+                        { value: '', label: 'Select Material' },
+                        ...materialCodes.map((material) => ({ value: material.code, label: `${material.code} - ${material.name}` })),
+                      ]}
+                    />
                   </div>
 
                   {/* Declared Quantity */}
@@ -2241,10 +2358,12 @@ export function Orders() {
                     <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                       Destination Silo 1
                     </label>
-                    <select
-                      value={editFormData.destinationSilo1 || ''}
-                      onChange={(e) => {
-                        const newValue = e.target.value;
+                    <SearchableSelect
+                      testId="live-orders-edit-silo1"
+                      listMinWidth={320}
+                      value={String(editFormData.destinationSilo1 || '')}
+                      placeholder="Select Silo 1"
+                      onChange={(newValue) => {
                         setEditFormData({
                           ...editFormData, 
                           destinationSilo1: newValue,
@@ -2252,10 +2371,7 @@ export function Orders() {
                           destinationSilo2: editFormData.destinationSilo2 === newValue ? '' : editFormData.destinationSilo2
                         });
                       }}
-                      className="text-sm text-gray-900 dark:text-white bg-gray-50 dark:bg-slate-800 p-2 rounded border border-gray-200 dark:border-slate-600 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                    >
-                      <option value="">Select Silo 1</option>
-                      {(() => {
+                      options={[{ value: '', label: 'Select Silo 1' }, ...(() => {
                         // Get order type and line for edit modal
                         let orderType = 'intake';
                         let line = 1;
@@ -2313,14 +2429,10 @@ export function Orders() {
                           orderType === 'outloading'
                             ? getOutloadingSiloStatusSuffix(silo, allSilosList)
                             : silo.lock_active ? ' (Locked)' : silo.hl_active ? ' (High Level)' : ' (Available)';
-                        return (
-                          <option key={silo.bin_name} value={silo.silo_no || 0}>
-                            {silo.bin_name}{materialInfo}{statusText}
-                          </option>
-                        );
+                        return { value: String(silo.silo_no || 0), label: `${silo.bin_name}${materialInfo}${statusText}` };
                       });
-                    })()}
-                    </select>
+})()]}
+/>
                   </div>
 
                   {/* Destination Silo 2 */}
@@ -2328,13 +2440,13 @@ export function Orders() {
                     <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                       Destination Silo 2
                     </label>
-                    <select
-                      value={editFormData.destinationSilo2 || ''}
-                      onChange={(e) => setEditFormData({...editFormData, destinationSilo2: e.target.value})}
-                      className="text-sm text-gray-900 dark:text-white bg-gray-50 dark:bg-slate-800 p-2 rounded border border-gray-200 dark:border-slate-600 focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                    >
-                      <option value="">Select Silo 2</option>
-                      {(() => {
+                    <SearchableSelect
+                      testId="live-orders-edit-silo2"
+                      listMinWidth={320}
+                      value={String(editFormData.destinationSilo2 || '')}
+                      onChange={(v) => setEditFormData({...editFormData, destinationSilo2: v})}
+                      placeholder="Select Silo 2"
+                      options={[{ value: '', label: 'Select Silo 2' }, ...(() => {
                         // Get order type and line for edit modal
                         let orderType = 'intake';
                         let line = 1;
@@ -2432,14 +2544,10 @@ export function Orders() {
                           orderType === 'outloading'
                             ? getOutloadingSiloStatusSuffix(silo, allSilosList)
                             : silo.lock_active ? ' (Locked)' : silo.hl_active ? ' (High Level)' : ' (Available)';
-                        return (
-                          <option key={silo.bin_name} value={silo.silo_no || 0}>
-                            {silo.bin_name}{materialInfo}{statusText}
-                          </option>
-                        );
+                        return { value: String(silo.silo_no || 0), label: `${silo.bin_name}${materialInfo}${statusText}` };
                       });
-                    })()}
-                    </select>
+})()]}
+/>
                   </div>
 
                 </div>
