@@ -32,6 +32,9 @@ class PalletReport(db.Model):
     # PLC FullRun bit at this minute; NULL on rows stored before the bit existed.
     full_run = db.Column(db.Boolean, nullable=True)
     selection = db.Column(db.Integer, nullable=True)
+    # Material the run's silos held at this minute (from Storage); NULL on older rows.
+    material_code = db.Column(db.String(120), nullable=True)
+    material_name = db.Column(db.String(255), nullable=True)
     recorded_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utc_now)
 
@@ -47,6 +50,8 @@ class PalletReport(db.Model):
             "running": self.running,
             "full_run": self.full_run,
             "selection": self.selection,
+            "material_code": self.material_code,
+            "material_name": self.material_name,
             "recorded_at": self.recorded_at.isoformat() if self.recorded_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -59,7 +64,11 @@ def ensure_pallet_run_columns():
     insp = inspect(db.engine)
     statements = []
     if insp.has_table("pallet_report"):
-        statements.append("ALTER TABLE pallet_report ADD COLUMN IF NOT EXISTS full_run BOOLEAN")
+        statements += [
+            "ALTER TABLE pallet_report ADD COLUMN IF NOT EXISTS full_run BOOLEAN",
+            "ALTER TABLE pallet_report ADD COLUMN IF NOT EXISTS material_code VARCHAR(120)",
+            "ALTER TABLE pallet_report ADD COLUMN IF NOT EXISTS material_name VARCHAR(255)",
+        ]
     if insp.has_table("pallet_orders"):
         statements += [
             "ALTER TABLE pallet_orders ADD COLUMN IF NOT EXISTS active_seconds DOUBLE PRECISION",

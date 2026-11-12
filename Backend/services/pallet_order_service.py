@@ -173,6 +173,9 @@ class SQLAlchemyPalletOrderRepository:
         from models.pallet_order import PalletOrder
 
         sequence = self._next_sequence(line)
+        from services.pallet_material import material_for_route
+
+        material_code, material_name = material_for_route(values, self.session)
         order = PalletOrder(
             line=line,
             order_sequence=sequence,
@@ -181,8 +184,8 @@ class SQLAlchemyPalletOrderRepository:
             source2=values.get("source2"),
             destination1=values.get("destination1"),
             destination2=values.get("destination2"),
-            production_name=None,
-            material=None,
+            production_name=material_name,
+            material=material_code,
             start_qty=values.get("quantity"),
             latest_qty=values.get("quantity"),
             final_qty=None,
@@ -228,7 +231,15 @@ class SQLAlchemyPalletOrderRepository:
         for field in ROUTING_FIELDS:
             setattr(order, field, values.get(field))
         order.latest_qty = values.get("quantity")
-        self._add_movement(order, values, timestamp)
+        if self._add_movement(order, values, timestamp) or (
+            not order.material and int(timestamp.timestamp()) % 60 < 2
+        ):
+            # New route, or still no material: ask Storage (at most about once a minute).
+            from services.pallet_material import material_for_route
+
+            material_code, material_name = material_for_route(values, self.session)
+            if material_code:
+                order.material, order.production_name = material_code, material_name
         return order
 
     def complete(self, order: Any, values: Mapping[str, Any], timestamp: datetime):

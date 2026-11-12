@@ -7,6 +7,7 @@ from sqlalchemy import String, cast, or_
 
 from models.pallet_order import PalletOrder
 from models.pallet_report import PalletReport
+from services.pallet_material import fill_missing_session_materials, material_for_route
 from services.pallet_report_service import (
     PalletPLCReadError,
     build_history_sessions,
@@ -123,6 +124,8 @@ def _filtered_history_sessions():
                     session["destination2"],
                     session["selection"],
                     f"P{session['selection']}" if session["selection"] else None,
+                    session.get("material"),
+                    session.get("production_name"),
                 )
                 if value is not None
             )
@@ -143,6 +146,15 @@ def pallet_live():
             order = active_orders.get(line)
             values["production_name"] = order.production_name if order else None
             values["material"] = order.material if order else None
+            if order and not values["material"]:
+                values["material"], values["production_name"] = material_for_route(
+                    {
+                        "source1": order.source1,
+                        "source2": order.source2,
+                        "destination1": order.destination1,
+                        "destination2": order.destination2,
+                    }
+                )
             values["current_order"] = None
             values["paused"] = bool(order) and not values["running"]
             if order:
@@ -206,7 +218,7 @@ def pallet_history():
         total = len(sessions)
         pages = (total + page_size - 1) // page_size
         start = (page - 1) * page_size
-        items = sessions[start:start + page_size]
+        items = fill_missing_session_materials(sessions[start:start + page_size])
         return jsonify(
             {
                 "success": True,

@@ -344,6 +344,11 @@ def build_history_sessions(
             else:
                 actual_seconds = min(full_seconds, running_minutes * PALLET_HISTORY_SAMPLE_SECONDS)
             paused_now = running and not getattr(last, "running", True)
+            # The material the silos held on the latest minute that recorded one.
+            material_row = next(
+                (row for row in reversed(session_rows) if getattr(row, "material_code", None)),
+                None,
+            )
 
             movements: List[Dict[str, Any]] = []
             previous_route = None
@@ -381,8 +386,8 @@ def build_history_sessions(
                     "source2": last.source2,
                     "destination1": last.destination1,
                     "destination2": last.destination2,
-                    "production_name": None,
-                    "material": None,
+                    "production_name": getattr(material_row, "material_name", None),
+                    "material": getattr(material_row, "material_code", None),
                     "start_qty": first.quantity,
                     "latest_qty": last.quantity,
                     "final_qty": None if running else last.quantity,
@@ -436,6 +441,10 @@ def collect_pallet_history(
                 return {"success": True, "stored": 0, "skipped": "another worker is collecting"}
 
         rows = build_snapshot_rows(reader())
+        if rows and session is None:
+            from services.pallet_material import annotate_snapshot_rows
+
+            annotate_snapshot_rows(rows, active_session)
         if rows:
             if model_factory is None:
                 from models.pallet_report import PalletReport
