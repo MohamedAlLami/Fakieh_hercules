@@ -484,7 +484,7 @@ function HistoryPanel() {
                     </TableCell>
                     <TableCell className="border p-3 text-base font-bold">{order.line}</TableCell>
                     <TableCell className="whitespace-nowrap border p-3">
-                      <Badge className={statusText === 'Running' ? 'bg-emerald-600 hover:bg-emerald-600' : statusText === 'Paused' ? 'bg-amber-600 hover:bg-amber-600' : 'bg-slate-600 hover:bg-slate-600'}>{statusText}</Badge>
+                      <Badge className={`border-transparent text-white ${statusText === 'Running' ? 'bg-emerald-600 hover:bg-emerald-600' : statusText === 'Paused' ? 'bg-amber-600 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-600'}`} data-status={statusText}>{statusText}</Badge>
                     </TableCell>
                     <TableCell className="w-28 border p-3 text-sm">{formatTimestamp(order.actual_start_time)}</TableCell>
                     <TableCell className="w-28 border p-3 text-sm">{running ? 'Live' : formatTimestamp(order.actual_end_time)}</TableCell>
