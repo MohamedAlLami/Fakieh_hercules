@@ -26,7 +26,7 @@ import {
   fetchOpenOrders,
   type TruckWeighOrder,
 } from "../../api/truckEntry";
-import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { useMaterialCodes } from "../../constants/materialCodes";
 import { useRowSelection } from "../../hooks/useRowSelection";
 import { printTable, rowsToPrint } from "../../utils/printTable";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
@@ -59,7 +59,7 @@ export default function Weighbridge() {
     material: "all",
   });
 
-  const selectableMaterials = useMemo(() => getSelectableMaterialCodes(), []);
+  const selectableMaterials = useMaterialCodes();
 
   const loadData = useCallback(async () => {
     setLoading(true);

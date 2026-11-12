@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { useMaterialCodes } from "../../constants/materialCodes";
 import { SearchableSelect } from "./SearchableSelect";
 import { fetchTempSilos, saveTempSilo, type TempSilo } from "../../api/tempSilos";
 
@@ -37,7 +37,7 @@ function sameCode(a: string, b: string) {
 
 /** Hand edit of a temporary silo (1001-1200): material and quantity, saved in Hercules only. */
 export function TempSiloDialog({ open, onOpenChange, siloNo, onSaved }: Props) {
-  const materials = useMemo(() => getSelectableMaterialCodes(), []);
+  const materials = useMaterialCodes();
   const materialOptions = useMemo(
     () => materials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
     [materials]

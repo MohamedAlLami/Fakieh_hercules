@@ -49,7 +49,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { API_BASE_URL } from "../../config/api";
-import { getSelectableMaterialCodes } from "../../constants/materialCodes";
+import { useMaterialCodes } from "../../constants/materialCodes";
 import truck3 from "@/assets/truck3.png";
 import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import { SearchableSelect } from "../../components/water-system/SearchableSelect";
@@ -141,7 +141,7 @@ export default function TruckEntry() {
   const [livePolling, setLivePolling] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TruckWeighOrder | null>(null);
 
-  const selectableMaterials = useMemo(() => getSelectableMaterialCodes(), []);
+  const selectableMaterials = useMaterialCodes();
 
   const outPendingOrders = useMemo(
     () => openOrders.filter((o) => o.status === "awaiting_second"),

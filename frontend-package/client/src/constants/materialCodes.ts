@@ -1,4 +1,13 @@
-/** Material codes from the plant master list (Materials.xml, 2026-11-10) — shared by Orders and Truck Weighbridge. */
+/**
+ * Material codes — shared by Orders and Truck Weighbridge.
+ *
+ * The live list comes from the backend, which follows the batch system's Materials.xml, so it
+ * changes by itself when the plant adds or removes a material. The list written out below is
+ * the copy from 2026-11-10: it is what shows until the live list has loaded, and the fallback
+ * if the backend cannot be reached.
+ */
+import { useSyncExternalStore } from "react";
+import { API_BASE_URL } from "../config/api";
 
 export interface MaterialCode {
   code: string;
@@ -192,9 +201,78 @@ export const LEGACY_MATERIAL_CODES: MaterialCode[] = [
 /** Codes that exist in the PLC list but are not real materials. */
 export const NON_SELECTABLE_MATERIAL_CODES = new Set(["None", "0", "000", "1", "999", ""]);
 
+export interface MaterialMasterStatus {
+  source?: string;
+  file_changed_at?: string | null;
+  last_copy_at?: string | null;
+  synced_at?: string | null;
+  active_count?: number;
+  inactive_count?: number;
+  error?: string | null;
+}
+
+// ---- live list -------------------------------------------------------------------------------
+const REFRESH_MS = 60_000;
+const BUILT_IN_SELECTABLE = MATERIAL_CODES.filter((m) => !NON_SELECTABLE_MATERIAL_CODES.has(m.code));
+let liveSelectable: MaterialCode[] | null = null;
+let liveNames: Map<string, string> | null = null;
+let liveStatus: MaterialMasterStatus | null = null;
+let started = false;
+const listeners = new Set<() => void>();
+
+function sameList(a: MaterialCode[] | null, b: MaterialCode[]): boolean {
+  return !!a && a.length === b.length && a.every((m, i) => m.code === b[i].code && m.name === b[i].name);
+}
+
+/** Fetch the live list now. Safe to call any time; failures keep the list already in use. */
+export async function refreshMaterialMaster(): Promise<void> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/material-master`);
+    if (!res.ok) return;
+    const data = (await res.json()) as {
+      materials?: MaterialCode[];
+      inactive?: MaterialCode[];
+      status?: MaterialMasterStatus;
+    };
+    const active = (data.materials ?? []).filter((m) => m && m.code != null);
+    if (active.length === 0) return;
+    const selectable = active
+      .map((m) => ({ code: String(m.code), name: String(m.name ?? "") }))
+      .filter((m) => !NON_SELECTABLE_MATERIAL_CODES.has(m.code))
+      .sort((x, y) => Number(x.code) - Number(y.code) || x.code.localeCompare(y.code));
+    const names = new Map<string, string>();
+    for (const m of [...(data.inactive ?? []), ...active]) names.set(String(m.code), String(m.name ?? ""));
+    const changed = !sameList(liveSelectable, selectable) || names.size !== (liveNames?.size ?? -1);
+    liveNames = names;
+    liveStatus = data.status ?? null;
+    if (changed) {
+      liveSelectable = selectable;
+      listeners.forEach((fn) => fn());
+    }
+  } catch {
+    /* backend not reachable: keep what we have */
+  }
+}
+
+function ensureStarted(): void {
+  if (started || typeof window === "undefined") return;
+  started = true;
+  void refreshMaterialMaster();
+  window.setInterval(() => void refreshMaterialMaster(), REFRESH_MS);
+}
+
+function subscribe(fn: () => void): () => void {
+  ensureStarted();
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
 export function getMaterialNameFromCode(materialCode: string | number | null | undefined): string {
   if (!materialCode || materialCode === "") return "-";
+  ensureStarted();
   const code = String(materialCode).trim();
+  const live = liveNames?.get(code);
+  if (live) return live;
   const material =
     MATERIAL_CODES.find((m) => m.code === code) ?? LEGACY_MATERIAL_CODES.find((m) => m.code === code);
   return material ? material.name : code;
@@ -202,5 +280,16 @@ export function getMaterialNameFromCode(materialCode: string | number | null | u
 
 /** Materials a user may pick (excludes None, Empty, Not Used and Out Of Service). */
 export function getSelectableMaterialCodes(): MaterialCode[] {
-  return MATERIAL_CODES.filter((m) => !NON_SELECTABLE_MATERIAL_CODES.has(m.code));
+  ensureStarted();
+  return liveSelectable ?? BUILT_IN_SELECTABLE;
+}
+
+/** The pickable materials, re-rendering the component when the plant's list changes. */
+export function useMaterialCodes(): MaterialCode[] {
+  return useSyncExternalStore(subscribe, getSelectableMaterialCodes, getSelectableMaterialCodes);
+}
+
+/** Where the list came from and when, for a small note on screen. */
+export function getMaterialMasterStatus(): MaterialMasterStatus | null {
+  return liveStatus;
 }

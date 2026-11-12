@@ -1,4 +1,9 @@
-"""Material codes mirrored from frontend Orders.tsx (PLC XML list)."""
+"""Built-in material codes (a copy of the batch system's Materials.xml from 2026-11-10).
+
+The live list comes from services.material_master, which follows Materials.xml on the batch PC.
+This built-in copy is the fallback when that list is not available, and it still gives a name
+to codes that old records use.
+"""
 
 from __future__ import annotations
 
@@ -191,8 +196,24 @@ LEGACY_MATERIAL_CODES = [
 DISALLOWED_MATERIAL_CODES = frozenset({"None", "0", "000", "1", "999", ""})
 
 
+def _master():
+    try:
+        from services import material_master
+        return material_master
+    except Exception:
+        return None
+
+
 def resolve_material_name(code: str) -> Optional[str]:
     code = str(code).strip()
+    master = _master()
+    if master is not None:
+        try:
+            name = master.name_of(code)
+            if name:
+                return name
+        except Exception:
+            pass
     for item in MATERIAL_CODES + LEGACY_MATERIAL_CODES:
         if item["code"] == code:
             return item["name"]
@@ -203,4 +224,10 @@ def is_valid_material_code(code: str) -> bool:
     code = str(code).strip()
     if not code or code in DISALLOWED_MATERIAL_CODES:
         return False
+    master = _master()
+    if master is not None:
+        try:
+            return master.is_active(code)
+        except Exception:
+            pass
     return any(item["code"] == code for item in MATERIAL_CODES)

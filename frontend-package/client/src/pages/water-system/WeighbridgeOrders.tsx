@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ClipboardList, Pencil, FileSpreadsheet, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react'
 import { SearchableSelect } from '../../components/water-system/SearchableSelect'
-import { getSelectableMaterialCodes } from '../../constants/materialCodes'
+import { useMaterialCodes } from '../../constants/materialCodes'
 import { useRowSelection } from '../../hooks/useRowSelection'
 import { printTable, rowsToPrint } from '../../utils/printTable'
 import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
@@ -63,7 +63,7 @@ export default function WeighbridgeOrders(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [toDelete, setToDelete] = useState<WeighbridgeOrder | null>(null)
 
-  const materials = useMemo(() => getSelectableMaterialCodes(), [])
+  const materials = useMaterialCodes()
   const productOptions = useMemo(
     () => materials.map((m) => ({ value: m.code, label: `${m.code} — ${m.name}` })),
     [materials],

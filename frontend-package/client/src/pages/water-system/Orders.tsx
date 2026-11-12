@@ -22,7 +22,7 @@ import {
 import { SearchableSelect, type SearchableOption } from '../../components/water-system/SearchableSelect'
 import { printTable } from '../../utils/printTable'
 import { exportTableToExcel, type ExportColumn } from '../../utils/exportTable'
-import { getSelectableMaterialCodes, getMaterialNameFromCode } from '../../constants/materialCodes'
+import { useMaterialCodes, getMaterialNameFromCode } from '../../constants/materialCodes'
 import { RfidAssignModal, orderRefLabelFromActiveTab } from '../../components/water-system/RfidAssignModal'
 
 const baseUrl = API_BASE_URL
@@ -226,7 +226,8 @@ export function Orders() {
   useSilosPolling(15000);
   const { toast } = useToast();
   
-  const materialCodes = getSelectableMaterialCodes().slice().sort((a, b) => Number(a.code) - Number(b.code));
+  const liveMaterialCodes = useMaterialCodes();
+  const materialCodes = liveMaterialCodes.slice().sort((a, b) => Number(a.code) - Number(b.code));
   
   // Helper function to get material name for a silo number
   const getMaterialNameForSilo = (siloNumber: string | number) => {

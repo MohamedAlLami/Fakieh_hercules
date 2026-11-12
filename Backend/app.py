@@ -34,6 +34,7 @@ from routes.client_routes import client_bp
 from routes.truck_entry_routes import truck_entry_bp
 from routes.temp_silo_routes import temp_silo_bp
 from routes.weighbridge_order_routes import weighbridge_order_bp
+from routes.material_master_routes import material_master_bp
 from routes.ai_routes import ai_bp
 from routes.live_routes import live_bp
 from routes.pallet_report_routes import pallet_report_bp
@@ -146,6 +147,7 @@ app.register_blueprint(client_bp)
 app.register_blueprint(truck_entry_bp)
 app.register_blueprint(temp_silo_bp)
 app.register_blueprint(weighbridge_order_bp)
+app.register_blueprint(material_master_bp)
 app.register_blueprint(ai_bp)
 app.register_blueprint(live_bp)
 app.register_blueprint(pallet_report_bp)
@@ -228,6 +230,13 @@ if __name__ == '__main__':
             start_queue_dispatcher(app)
         except Exception as _queue_disp_err:
             print(f"Queue dispatcher not started: {_queue_disp_err}")
+
+        # Material list: follows the local copy of the batch system's Materials.xml.
+        try:
+            from scheduler import start_material_sync
+            start_material_sync(app)
+        except Exception as _material_sync_err:
+            print(f"Material list sync not started: {_material_sync_err}")
 
         # DB7 event monitor: translates running/selection changes into
         # restart-safe pallet orders used by the live view.
