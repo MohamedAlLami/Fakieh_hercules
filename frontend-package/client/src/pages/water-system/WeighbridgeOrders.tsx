@@ -47,6 +47,8 @@ const STATUS_CLASS: Record<WeighbridgeOrder['status'], string> = {
 }
 
 const EMPTY_FORM = { order_no: '', product_code: '', quantity_kg: '', client_id: '' }
+/** A new order starts at one full truck; the operator can type over it. */
+const DEFAULT_QUANTITY_KG = '25000'
 
 /** Management > Weighbridge Orders: what each truck is coming for (product, quantity, client). */
 export default function WeighbridgeOrders(): JSX.Element {
@@ -144,7 +146,7 @@ export default function WeighbridgeOrders(): JSX.Element {
 
   const openAdd = () => {
     setEditing(null)
-    setForm({ ...EMPTY_FORM, order_no: String(nextNo) })
+    setForm({ ...EMPTY_FORM, order_no: String(nextNo), quantity_kg: DEFAULT_QUANTITY_KG })
     setFormError(null)
     setShowModal(true)
     void loadClients()
