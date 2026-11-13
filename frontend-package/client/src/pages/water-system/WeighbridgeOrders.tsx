@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ClipboardList, Pencil, FileSpreadsheet, Plus, Printer, RefreshCw, Trash2, X } from 'lucide-react'
+import { ClipboardList, Pencil, FileSpreadsheet, Plus, Printer, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { SearchableSelect } from '../../components/water-system/SearchableSelect'
 import { useMaterialCodes } from '../../constants/materialCodes'
 import { useRowSelection } from '../../hooks/useRowSelection'
@@ -14,11 +14,14 @@ import {
   deleteWeighbridgeOrder,
   fetchAllClients,
   fetchWeighbridgeOrders,
+  importWeighbridgeOrders,
   orderStatusLabel,
   updateWeighbridgeOrder,
   type ClientOption,
+  type OrderImportResult,
   type WeighbridgeOrder,
 } from '../../api/weighbridgeOrders'
+import { readOrdersSheet } from '../../utils/readOrdersSheet'
 
 const fmtKg = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 1 })
 
@@ -62,6 +65,10 @@ export default function WeighbridgeOrders(): JSX.Element {
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [toDelete, setToDelete] = useState<WeighbridgeOrder | null>(null)
+  // Import from the planning Excel sheet.
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{ file: string; result?: OrderImportResult; error?: string } | null>(null)
 
   const materials = useMaterialCodes()
   const productOptions = useMemo(
@@ -90,6 +97,22 @@ export default function WeighbridgeOrders(): JSX.Element {
       setLoading(false)
     }
   }, [])
+
+  const handleImportFile = async (file: File | undefined) => {
+    if (!file) return
+    setImporting(true)
+    try {
+      const rows = await readOrdersSheet(file)
+      const result = await importWeighbridgeOrders(rows)
+      setImportResult({ file: file.name, result })
+      await Promise.all([load(), loadClients()])
+    } catch (e) {
+      setImportResult({ file: file.name, error: e instanceof Error ? e.message : 'The import failed' })
+    } finally {
+      setImporting(false)
+      if (fileInput.current) fileInput.current.value = ''
+    }
+  }
 
   const loadClients = useCallback(async () => {
     try {
@@ -271,8 +294,8 @@ export default function WeighbridgeOrders(): JSX.Element {
           ))}
         </div>
 
-        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 mb-4">
-          <div className="flex flex-col md:flex-row gap-3 w-full lg:w-auto flex-1">
+        <div className="flex flex-col 2xl:flex-row items-start 2xl:items-center justify-between gap-4 mb-4">
+          <div className="flex flex-col md:flex-row gap-3 w-full 2xl:w-auto flex-1">
             <Input
               placeholder="Search order number, product or client..."
               className={`w-full md:flex-1 md:min-w-[16rem] ${inputClass}`}
@@ -292,7 +315,7 @@ export default function WeighbridgeOrders(): JSX.Element {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2 2xl:shrink-0">
             <Button
               variant="outline"
               onClick={() => void load()}
@@ -320,6 +343,25 @@ export default function WeighbridgeOrders(): JSX.Element {
             >
               <FileSpreadsheet className="h-4 w-4 mr-2" />
               {selection.count > 0 ? `Export selected (${selection.count})` : 'Export Excel'}
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(e) => void handleImportFile(e.target.files?.[0])}
+              data-testid="orders-import-file"
+            />
+            <Button
+              variant="outline"
+              onClick={() => fileInput.current?.click()}
+              disabled={importing}
+              title="Import orders from the planning Excel sheet (farm_code, farm_name, Quantity_exp, feed_code, prodiction_num)"
+              className="border-slate-600 text-slate-300 light:border-gray-300 light:text-gray-700 hover:bg-slate-700 light:hover:bg-gray-100"
+              data-testid="orders-import"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              {importing ? 'Importing…' : 'Import Excel'}
             </Button>
             <Button
               onClick={openAdd}
@@ -513,6 +555,68 @@ export default function WeighbridgeOrders(): JSX.Element {
                 data-testid="order-form-save"
               >
                 {saving ? 'Saving...' : editing ? 'Update Order' : 'Save Order'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {importResult && (
+        <div className="fixed inset-0 z-40 bg-black/70 flex items-center justify-center p-4" data-testid="orders-import-result">
+          <div className="bg-slate-900 light:bg-white text-white light:text-gray-900 rounded-xl shadow-xl w-full max-w-lg p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-cyan-600/20 rounded-full">
+                <Upload className="w-6 h-6 text-cyan-400 light:text-cyan-700" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-xl font-semibold">Import orders</h2>
+                <p className="text-xs text-slate-400 light:text-gray-500 truncate">{importResult.file}</p>
+              </div>
+            </div>
+            {importResult.error ? (
+              <p className="text-sm text-red-400 light:text-red-600" data-testid="orders-import-error">
+                Nothing was imported. {importResult.error}
+              </p>
+            ) : importResult.result ? (
+              <div className="space-y-3 text-sm">
+                <table className="w-full">
+                  <tbody>
+                    <tr>
+                      <td className="py-1 text-slate-300 light:text-gray-600">New orders added</td>
+                      <td className="py-1 text-right font-semibold" data-testid="orders-import-created">{importResult.result.created}</td>
+                    </tr>
+                    <tr>
+                      <td className="py-1 text-slate-300 light:text-gray-600">Already in Hercules (left as they are)</td>
+                      <td className="py-1 text-right font-semibold" data-testid="orders-import-existing">{importResult.result.already_there}</td>
+                    </tr>
+                    <tr>
+                      <td className="py-1 text-slate-300 light:text-gray-600">New clients added</td>
+                      <td className="py-1 text-right font-semibold">{importResult.result.new_clients}</td>
+                    </tr>
+                    <tr>
+                      <td className="py-1 text-slate-300 light:text-gray-600">Rows that could not be read</td>
+                      <td className="py-1 text-right font-semibold" data-testid="orders-import-errors">{importResult.result.error_count}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                {importResult.result.unknown_products.length > 0 && (
+                  <p className="text-amber-300 light:text-amber-700" data-testid="orders-import-unknown">
+                    These product codes are not in the material list yet, so their orders have no product name:{' '}
+                    {importResult.result.unknown_products.map((u) => `${u.code} (${u.orders})`).join(', ')}.
+                  </p>
+                )}
+                {importResult.result.errors.length > 0 && (
+                  <div className="max-h-40 overflow-y-auto rounded border border-slate-700 light:border-gray-200 p-2 text-xs">
+                    {importResult.result.errors.map((er) => (
+                      <div key={`${er.row}-${er.reason}`}>Row {er.row}: {er.reason}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+            <div className="flex justify-end pt-2">
+              <Button onClick={() => setImportResult(null)} className="bg-cyan-600 text-white hover:bg-cyan-700" data-testid="orders-import-close">
+                Close
               </Button>
             </div>
           </div>

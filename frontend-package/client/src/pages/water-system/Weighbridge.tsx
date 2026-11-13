@@ -29,7 +29,7 @@ import {
 import { useMaterialCodes } from "../../constants/materialCodes";
 import { useRowSelection } from "../../hooks/useRowSelection";
 import { printTable, rowsToPrint } from "../../utils/printTable";
-import { printMemo } from "../../utils/printMemo";
+import { MemoActionsDialog } from "../../components/water-system/MemoDialogs";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 
 function fmtTime(ts?: string | null) {
@@ -52,6 +52,7 @@ export default function Weighbridge() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [memoOrder, setMemoOrder] = useState<TruckWeighOrder | null>(null);
 
   const [filters, setFilters] = useState({
     truckId: "",
@@ -503,11 +504,8 @@ export default function Weighbridge() {
                         variant="outline"
                         size="sm"
                         className="h-8 gap-1.5 whitespace-nowrap"
-                        title="Print the Dispatch and Receive Memo for this trip"
-                        onClick={() => {
-                          const err = printMemo(row);
-                          if (err) setErrorMsg(err);
-                        }}
+                        title="Save or print the Dispatch and Receive Memo for this trip"
+                        onClick={() => setMemoOrder(row)}
                         data-testid={`wb-log-memo-${row.id}`}
                       >
                         <Printer className="h-3.5 w-3.5" />
@@ -531,6 +529,7 @@ export default function Weighbridge() {
           </div>
         </div>
       </div>
+      <MemoActionsDialog order={memoOrder} onClose={() => setMemoOrder(null)} />
     </WaterSystemLayout>
   );
 }

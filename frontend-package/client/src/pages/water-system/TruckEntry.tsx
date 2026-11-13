@@ -55,7 +55,7 @@ import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import { SearchableSelect } from "../../components/water-system/SearchableSelect";
 import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbridgeOrders";
 import { printTable } from "../../utils/printTable";
-import { printMemo } from "../../utils/printMemo";
+import { ExitMemoPrompt, MemoActionsDialog } from "../../components/water-system/MemoDialogs";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 import {
   createTruckWeighOrder,
@@ -69,6 +69,7 @@ import {
   saveFirstWeight,
   saveSecondWeight,
   type DriverOption,
+  type MemoDetails,
   type ScaleLiveReading,
   type SilosForMaterial,
   type SiloOption,
@@ -141,16 +142,9 @@ export default function TruckEntry() {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [livePolling, setLivePolling] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TruckWeighOrder | null>(null);
-  // Details for the printed Dispatch and Receive Memo, typed at exit (all optional).
-  const [memoBags, setMemoBags] = useState("");
-  const [memoNotes, setMemoNotes] = useState("");
-  const [memoOperator, setMemoOperator] = useState(() => {
-    try {
-      return localStorage.getItem("wb.scaleOperator") ?? "";
-    } catch {
-      return "";
-    }
-  });
+  // Exit: the weight is taken when Capture Exit is pressed, then the bags are asked for.
+  const [exitPrompt, setExitPrompt] = useState<{ orderId: number; weight: number } | null>(null);
+  const [memoOrder, setMemoOrder] = useState<TruckWeighOrder | null>(null);
   const [lastCompleted, setLastCompleted] = useState<TruckWeighOrder | null>(null);
 
   const selectableMaterials = useMaterialCodes();
@@ -461,7 +455,28 @@ export default function TruckEntry() {
     setNewEntryFormKey((k) => k + 1);
   }
 
-  /** Single action: create trip (if needed) + save entry weight, or save exit weight */
+  /** The bags prompt was answered (or skipped): save the exit weight that was captured. */
+  async function confirmExit(details: MemoDetails) {
+    if (!exitPrompt) return;
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const updated = await saveSecondWeight(exitPrompt.orderId, exitPrompt.weight, details);
+      setExitPrompt(null);
+      setLastCompleted(updated);
+      setMemoOrder(updated);
+      setMessage(`Trip completed. NET = ${Math.round(updated.net_kg ?? 0)} kg.`);
+      clearActiveOrder();
+      await refreshData();
+    } catch (err: unknown) {
+      setExitPrompt(null);
+      setErrorMsg(err instanceof Error ? err.message : "Failed to save exit weight");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** Single action: create trip (if needed) + save entry weight, or ask for the bags and save exit weight */
   async function handleCaptureAndSave() {
     const w = liveReading?.weight_kg;
     if (w == null || w <= 0) {
@@ -476,36 +491,9 @@ export default function TruckEntry() {
 
     // ── EXIT ──
     if (isExitPhase && activeOrder) {
-      setLoading(true);
       setErrorMsg(null);
       setMessage(null);
-      try {
-        const updated = await saveSecondWeight(activeOrder.id, rounded, {
-          bags: memoBags.trim(),
-          notes: memoNotes.trim(),
-          operator: memoOperator.trim(),
-        });
-        try {
-          localStorage.setItem("wb.scaleOperator", memoOperator.trim());
-        } catch {
-          /* the name is simply not remembered */
-        }
-        setMemoBags("");
-        setMemoNotes("");
-        setLastCompleted(updated);
-        const memoError = printMemo(updated);
-        setMessage(
-          `Trip completed. NET = ${Math.round(updated.net_kg ?? 0)} kg — ${
-            memoError ? "see Weighbridge Log." : "the memo is ready to print."
-          }`
-        );
-        clearActiveOrder();
-        await refreshData();
-      } catch (err: unknown) {
-        setErrorMsg(err instanceof Error ? err.message : "Failed to save exit weight");
-      } finally {
-        setLoading(false);
-      }
+      setExitPrompt({ orderId: activeOrder.id, weight: rounded });
       return;
     }
 
@@ -1187,60 +1175,15 @@ export default function TruckEntry() {
                 </div>
               </div>
 
-              {isExitPhase && (
-                <div className="grid grid-cols-2 gap-2" data-testid="exit-memo-fields">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">No. of Bags</label>
-                    <input
-                      type="number"
-                      min={0}
-                      inputMode="numeric"
-                      placeholder="Optional"
-                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
-                      value={memoBags}
-                      onChange={(e) => setMemoBags(e.target.value)}
-                      data-testid="exit-memo-bags"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">Scale Operator</label>
-                    <input
-                      type="text"
-                      maxLength={100}
-                      placeholder="Your name"
-                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
-                      value={memoOperator}
-                      onChange={(e) => setMemoOperator(e.target.value)}
-                      data-testid="exit-memo-operator"
-                    />
-                  </div>
-                  <div className="space-y-1.5 col-span-2">
-                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">Memo Notes</label>
-                    <input
-                      type="text"
-                      maxLength={500}
-                      placeholder="Optional, printed on the memo"
-                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
-                      value={memoNotes}
-                      onChange={(e) => setMemoNotes(e.target.value)}
-                      data-testid="exit-memo-notes"
-                    />
-                  </div>
-                </div>
-              )}
-
               {lastCompleted && !isExitPhase && (
                 <Button
                   variant="outline"
                   className="h-9 w-full gap-2 text-xs"
-                  onClick={() => {
-                    const err = printMemo(lastCompleted);
-                    if (err) setErrorMsg(err);
-                  }}
+                  onClick={() => setMemoOrder(lastCompleted)}
                   data-testid="exit-memo-reprint"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  Print memo again: {lastCompleted.ticket}
+                  Memo for the last truck: {lastCompleted.ticket}
                 </Button>
               )}
 
@@ -1486,6 +1429,19 @@ export default function TruckEntry() {
           open={tempDialogOpen}
           onOpenChange={setTempDialogOpen}
           onSaved={() => setSilosReload((n) => n + 1)}
+        />
+
+        <ExitMemoPrompt
+          open={!!exitPrompt}
+          weightKg={exitPrompt?.weight ?? null}
+          saving={loading}
+          onCancel={() => setExitPrompt(null)}
+          onConfirm={(details) => void confirmExit(details)}
+        />
+        <MemoActionsDialog
+          order={memoOrder}
+          title="Trip completed"
+          onClose={() => setMemoOrder(null)}
         />
 
         <AlertDialog

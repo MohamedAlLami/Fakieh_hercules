@@ -107,3 +107,33 @@ export function orderStatusLabel(status: WeighbridgeOrderStatus): string {
   if (status === "closed") return "Closed";
   return "Open";
 }
+
+/** One row of the planning Excel sheet (farm_code, farm_name, Quantity_exp, feed_code, prodiction_num). */
+export interface OrderImportRow {
+  row: number;
+  farm_code: unknown;
+  farm_name: unknown;
+  quantity_exp: unknown;
+  feed_code: unknown;
+  production_num: unknown;
+}
+
+export interface OrderImportResult {
+  rows: number;
+  created: number;
+  already_there: number;
+  new_clients: number;
+  error_count: number;
+  errors: { row: number; reason: string }[];
+  unknown_products: { code: string; orders: number }[];
+}
+
+export async function importWeighbridgeOrders(rows: OrderImportRow[]): Promise<OrderImportResult> {
+  return parse<OrderImportResult>(
+    await fetch(`${BASE}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    })
+  );
+}
