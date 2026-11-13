@@ -248,10 +248,18 @@ export default function TruckManagement({
 
   const handleAddDriver = async () => {
     try {
+      // Contact and truck assignment are not on the form: an existing driver keeps what it has.
+      const payload = {
+        name: newDriver.name,
+        license_no: newDriver.license_no,
+        rfid: newDriver.rfid,
+        status: newDriver.status,
+        contact: newDriver.contact || '-',
+      }
       if (editDriverMode && selectedDriver) {
-        await axios.put(`${API_BASE}/trucks/drivers/${selectedDriver.id}`, newDriver)
+        await axios.put(`${API_BASE}/trucks/drivers/${selectedDriver.id}`, payload)
       } else {
-        await axios.post(`${API_BASE}/trucks/drivers`, newDriver)
+        await axios.post(`${API_BASE}/trucks/drivers`, payload)
       }
       setShowAddDriverModal(false)
       setEditDriverMode(false)
@@ -319,8 +327,6 @@ export default function TruckManagement({
     { header: 'Name', cell: (d) => d.name },
     { header: 'RFID', cell: (d) => d.rfid },
     { header: 'License No.', cell: (d) => d.license_no },
-    { header: 'Contact', cell: (d) => d.contact },
-    { header: 'Assigned Truck', cell: (d) => d.assigned_truck },
     { header: 'Status', cell: (d) => d.status },
   ]
   const isTrucks = activeTab === 'trucks'
@@ -524,8 +530,6 @@ export default function TruckManagement({
                   <TableHead>Name</TableHead>
                   <TableHead>RFID</TableHead>
                   <TableHead>License No.</TableHead>
-                  <TableHead>Contact</TableHead>
-                  <TableHead>Assigned Truck</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -536,8 +540,6 @@ export default function TruckManagement({
                     <TableCell className="text-cyan-400 font-semibold">{d.name}</TableCell>
                     <TableCell>{d.rfid}</TableCell>
                     <TableCell>{d.license_no}</TableCell>
-                    <TableCell>{d.contact}</TableCell>
-                    <TableCell>{d.assigned_truck}</TableCell>
                     <TableCell><span className={`px-2 py-1 text-xs rounded-full font-medium ${getStatusColor(d.status)}`}>{d.status}</span></TableCell>
                     <TableCell className="text-right">
                       <div className="flex items-center justify-end space-x-2">
@@ -828,21 +830,6 @@ export default function TruckManagement({
               <Input placeholder="Name" value={newDriver.name} onChange={e => handleChangeDriver('name', e.target.value)} />
               <Input placeholder="RFID" value={newDriver.rfid} onChange={e => handleChangeDriver('rfid', e.target.value)} />
               <Input placeholder="License No." value={newDriver.license_no} onChange={e => handleChangeDriver('license_no', e.target.value)} />
-              <Input placeholder="Contact" value={newDriver.contact} onChange={e => handleChangeDriver('contact', e.target.value)} />
-              <Input placeholder="Assigned Truck" value={newDriver.assigned_truck} onChange={e => handleChangeDriver('assigned_truck', e.target.value)} />
-              <div>
-                <Select onValueChange={v => handleChangeDriver('truck_id', v)} value={newDriver.truck_id || "none"}>
-                  <SelectTrigger><SelectValue placeholder="Select Truck ID" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">No Truck Assigned</SelectItem>
-                    {truckData.map((truck) => (
-                      <SelectItem key={truck.id} value={String(truck.id)}>
-                        {truck.id} - {truck.license} ({truck.model})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <div>
                 <Select onValueChange={v => handleChangeDriver('status', v)} defaultValue={newDriver.status}>
                   <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
