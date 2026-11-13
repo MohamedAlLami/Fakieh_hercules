@@ -41,6 +41,10 @@ class TruckWeighOrder(db.Model):
     wb_driver_id = db.Column(db.Integer)
     wb_driver_name = db.Column(db.String(100))
     loading_point = db.Column(db.Integer)
+    # Details for the printed Dispatch and Receive Memo (all optional, typed at exit).
+    bags = db.Column(db.Integer)
+    memo_notes = db.Column(db.String(500))
+    exit_operator = db.Column(db.String(100))
 
     def compute_net(self):
         if self.first_weight_kg is None or self.second_weight_kg is None:
@@ -56,7 +60,7 @@ class TruckWeighOrder(db.Model):
             return "completed"
         return self.status
 
-    def to_dict(self, truck_plate=None, truck_driver=None):
+    def to_dict(self, truck_plate=None, truck_driver=None, truck_company=None):
         return {
             "id": self.id,
             "ticket": self.ticket,
@@ -86,6 +90,10 @@ class TruckWeighOrder(db.Model):
             "driver_id": self.wb_driver_id,
             "driver_name": self.wb_driver_name,
             "loading_point": self.loading_point,
+            "truck_company": truck_company,
+            "bags": self.bags,
+            "memo_notes": self.memo_notes,
+            "exit_operator": self.exit_operator,
         }
 
 
@@ -117,6 +125,9 @@ def ensure_truck_weigh_orders_table():
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_driver_id INTEGER",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS wb_driver_name VARCHAR(100)",
         "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS loading_point INTEGER",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS bags INTEGER",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS memo_notes VARCHAR(500)",
+        "ALTER TABLE truck_weigh_orders ADD COLUMN IF NOT EXISTS exit_operator VARCHAR(100)",
     ]
     try:
         for stmt in column_statements + index_statements:

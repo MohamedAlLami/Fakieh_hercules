@@ -34,6 +34,18 @@ export interface TruckWeighOrder {
   driver_id?: number | null;
   driver_name?: string | null;
   loading_point?: number | null;
+  /** For the printed Dispatch and Receive Memo. */
+  truck_company?: string | null;
+  bags?: number | null;
+  memo_notes?: string | null;
+  exit_operator?: string | null;
+}
+
+/** Optional details typed at exit for the printed memo. */
+export interface MemoDetails {
+  bags?: string;
+  notes?: string;
+  operator?: string;
 }
 
 export interface DriverOption {
@@ -184,11 +196,15 @@ export async function saveFirstWeight(orderId: number, weight: number): Promise<
   return parseJson(res);
 }
 
-export async function saveSecondWeight(orderId: number, weight: number): Promise<TruckWeighOrder> {
+export async function saveSecondWeight(
+  orderId: number,
+  weight: number,
+  memo: MemoDetails = {}
+): Promise<TruckWeighOrder> {
   const res = await fetch(`${BASE}/orders/${orderId}/second`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ weight }),
+    body: JSON.stringify({ weight, ...memo }),
   });
   return parseJson(res);
 }

@@ -55,6 +55,7 @@ import { TempSiloDialog } from "../../components/water-system/TempSiloDialog";
 import { SearchableSelect } from "../../components/water-system/SearchableSelect";
 import { fetchWeighbridgeOrders, type WeighbridgeOrder } from "../../api/weighbridgeOrders";
 import { printTable } from "../../utils/printTable";
+import { printMemo } from "../../utils/printMemo";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 import {
   createTruckWeighOrder,
@@ -140,6 +141,17 @@ export default function TruckEntry() {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [livePolling, setLivePolling] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TruckWeighOrder | null>(null);
+  // Details for the printed Dispatch and Receive Memo, typed at exit (all optional).
+  const [memoBags, setMemoBags] = useState("");
+  const [memoNotes, setMemoNotes] = useState("");
+  const [memoOperator, setMemoOperator] = useState(() => {
+    try {
+      return localStorage.getItem("wb.scaleOperator") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [lastCompleted, setLastCompleted] = useState<TruckWeighOrder | null>(null);
 
   const selectableMaterials = useMaterialCodes();
 
@@ -468,9 +480,24 @@ export default function TruckEntry() {
       setErrorMsg(null);
       setMessage(null);
       try {
-        const updated = await saveSecondWeight(activeOrder.id, rounded);
+        const updated = await saveSecondWeight(activeOrder.id, rounded, {
+          bags: memoBags.trim(),
+          notes: memoNotes.trim(),
+          operator: memoOperator.trim(),
+        });
+        try {
+          localStorage.setItem("wb.scaleOperator", memoOperator.trim());
+        } catch {
+          /* the name is simply not remembered */
+        }
+        setMemoBags("");
+        setMemoNotes("");
+        setLastCompleted(updated);
+        const memoError = printMemo(updated);
         setMessage(
-          `Trip completed. NET = ${Math.round(updated.net_kg ?? 0)} kg — see Weighbridge Log.`
+          `Trip completed. NET = ${Math.round(updated.net_kg ?? 0)} kg — ${
+            memoError ? "see Weighbridge Log." : "the memo is ready to print."
+          }`
         );
         clearActiveOrder();
         await refreshData();
@@ -1159,6 +1186,63 @@ export default function TruckEntry() {
                   </div>
                 </div>
               </div>
+
+              {isExitPhase && (
+                <div className="grid grid-cols-2 gap-2" data-testid="exit-memo-fields">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">No. of Bags</label>
+                    <input
+                      type="number"
+                      min={0}
+                      inputMode="numeric"
+                      placeholder="Optional"
+                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
+                      value={memoBags}
+                      onChange={(e) => setMemoBags(e.target.value)}
+                      data-testid="exit-memo-bags"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">Scale Operator</label>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      placeholder="Your name"
+                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
+                      value={memoOperator}
+                      onChange={(e) => setMemoOperator(e.target.value)}
+                      data-testid="exit-memo-operator"
+                    />
+                  </div>
+                  <div className="space-y-1.5 col-span-2">
+                    <label className="text-[10px] uppercase tracking-wider wb-text-sec">Memo Notes</label>
+                    <input
+                      type="text"
+                      maxLength={500}
+                      placeholder="Optional, printed on the memo"
+                      className="wb-input h-10 w-full px-3 text-sm wb-text bg-transparent outline-none"
+                      value={memoNotes}
+                      onChange={(e) => setMemoNotes(e.target.value)}
+                      data-testid="exit-memo-notes"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {lastCompleted && !isExitPhase && (
+                <Button
+                  variant="outline"
+                  className="h-9 w-full gap-2 text-xs"
+                  onClick={() => {
+                    const err = printMemo(lastCompleted);
+                    if (err) setErrorMsg(err);
+                  }}
+                  data-testid="exit-memo-reprint"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  Print memo again: {lastCompleted.ticket}
+                </Button>
+              )}
 
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <div className="inline-flex rounded-md border wb-border overflow-hidden p-0.5 wb-stage">

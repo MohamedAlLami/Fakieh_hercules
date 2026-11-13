@@ -70,7 +70,33 @@ def _order_dict(order: TruckWeighOrder, truck_map=None, driver_map=None):
         truck_plate=getattr(t, "license", None) if t else None,
         # The driver chosen on the weighbridge for this trip wins over the truck's usual driver.
         truck_driver=order.wb_driver_name or (getattr(d, "name", None) if d else None),
+        truck_company=getattr(t, "company", None) if t else None,
     )
+
+
+def _apply_memo_details(order: TruckWeighOrder, data: dict):
+    """Optional memo details (bags, notes, scale operator). Returns an error text or None.
+
+    Only the keys that are present are touched, so an exit capture that sends none of them
+    behaves exactly as before.
+    """
+    if "bags" in data:
+        raw = data.get("bags")
+        if raw is None or str(raw).strip() == "":
+            order.bags = None
+        else:
+            try:
+                bags = int(str(raw).strip())
+            except (TypeError, ValueError):
+                return "bags must be a whole number"
+            if bags < 0 or bags > 100000:
+                return "bags must be between 0 and 100000"
+            order.bags = bags
+    if "notes" in data:
+        order.memo_notes = (str(data.get("notes") or "").strip()[:500]) or None
+    if "operator" in data:
+        order.exit_operator = (str(data.get("operator") or "").strip()[:100]) or None
+    return None
 
 
 def _open_order_for_truck(truck_id: int):
@@ -450,6 +476,10 @@ def save_second_weight(order_id: int):
     if order.first_weight_kg is None:
         return jsonify({"error": "First weight must be recorded before second weight"}), 409
 
+    memo_error = _apply_memo_details(order, data)
+    if memo_error:
+        return jsonify({"error": memo_error}), 400
+
     order.second_weight_kg = weight_val
     order.second_ts = _utcnow()
     order.net_kg = order.compute_net()
@@ -473,6 +503,25 @@ def save_second_weight(order_id: int):
     if order.silo_no is not None and order.stock_status != "applied":
         _run_stock_update(order)
 
+    truck_map, driver_map = _enrich_truck_maps({order.truck_id})
+    return jsonify(_order_dict(order, truck_map, driver_map)), 200
+
+
+@truck_entry_bp.route("/orders/<int:order_id>/memo", methods=["PUT"])
+def save_memo_details(order_id: int):
+    """Correct the memo details of a trip (bags, notes, scale operator) before a reprint."""
+    data = request.get_json(force=True) or {}
+    order = TruckWeighOrder.query.get(order_id)
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+    memo_error = _apply_memo_details(order, data)
+    if memo_error:
+        return jsonify({"error": memo_error}), 400
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to save memo details", "detail": str(e)}), 500
     truck_map, driver_map = _enrich_truck_maps({order.truck_id})
     return jsonify(_order_dict(order, truck_map, driver_map)), 200
 

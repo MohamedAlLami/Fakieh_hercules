@@ -29,6 +29,7 @@ import {
 import { useMaterialCodes } from "../../constants/materialCodes";
 import { useRowSelection } from "../../hooks/useRowSelection";
 import { printTable, rowsToPrint } from "../../utils/printTable";
+import { printMemo } from "../../utils/printMemo";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 
 function fmtTime(ts?: string | null) {
@@ -421,6 +422,7 @@ export default function Weighbridge() {
                   <TableHead>IN (kg)</TableHead>
                   <TableHead>OUT (kg)</TableHead>
                   <TableHead>NET (kg)</TableHead>
+                  <TableHead>Memo</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -496,12 +498,28 @@ export default function Weighbridge() {
                         </div>
                       )}
                     </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 whitespace-nowrap"
+                        title="Print the Dispatch and Receive Memo for this trip"
+                        onClick={() => {
+                          const err = printMemo(row);
+                          if (err) setErrorMsg(err);
+                        }}
+                        data-testid={`wb-log-memo-${row.id}`}
+                      >
+                        <Printer className="h-3.5 w-3.5" />
+                        Memo
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {filteredRows.length === 0 && (
                   <TableRow>
                     <TableCell
-                      colSpan={16}
+                      colSpan={17}
                       className="text-center py-8 text-sm text-slate-400 light:text-gray-500"
                     >
                       {loading ? "Loading..." : `No completed trips on ${reportDate ?? selectedDate}`}
