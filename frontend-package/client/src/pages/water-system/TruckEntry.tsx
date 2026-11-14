@@ -101,6 +101,15 @@ function fmtWeight(kg: number | null | undefined) {
   return kg.toLocaleString(undefined, { maximumFractionDigits: 0, minimumFractionDigits: 0 });
 }
 
+function rememberedScale(key: string, fallback: 1 | 2): 1 | 2 {
+  try {
+    const value = localStorage.getItem(key);
+    return value === "1" ? 1 : value === "2" ? 2 : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 const NO_SILOS: SilosForMaterial = { matching: [], unassigned: [], tempMatching: [], tempFree: [] };
 
 function siloLabel(s: SiloOption) {
@@ -142,6 +151,9 @@ export default function TruckEntry() {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [livePolling, setLivePolling] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TruckWeighOrder | null>(null);
+  // The two scales are not fixed to in and out: the operator says which one he is on.
+  const [entryScale, setEntryScale] = useState<1 | 2>(() => rememberedScale("wb.entryScale", 1));
+  const [exitScale, setExitScale] = useState<1 | 2>(() => rememberedScale("wb.exitScale", 2));
   // Exit: the weight is taken when Capture Exit is pressed, then the bags are asked for.
   const [exitPrompt, setExitPrompt] = useState<{ orderId: number; weight: number } | null>(null);
   const [memoOrder, setMemoOrder] = useState<TruckWeighOrder | null>(null);
@@ -260,12 +272,26 @@ export default function TruckEntry() {
   /** New entry ready: truck + material chosen — live Scale 1 before capture */
   const readyForNewEntry = Boolean(newTruckId && newMaterialCode) && !isExitPhase;
 
+  /** Which scale the operator is weighing on: his own choice, for the entry and for the exit. */
+  const chosenScale: 1 | 2 = isExitPhase ? exitScale : entryScale;
+  const chooseScale = (scale: 1 | 2) => {
+    if (isExitPhase) setExitScale(scale);
+    else setEntryScale(scale);
+    try {
+      localStorage.setItem(isExitPhase ? "wb.exitScale" : "wb.entryScale", String(scale));
+    } catch {
+      /* the choice is simply not remembered */
+    }
+    setLiveReading(null);
+    setLiveError(null);
+  };
+
   const activeScaleId: 1 | 2 | null = useMemo(() => {
-    if (isExitPhase) return 2;
-    if (isEntryPhase) return 1;
-    if (readyForNewEntry) return 1;
+    if (isExitPhase) return exitScale;
+    if (isEntryPhase) return entryScale;
+    if (readyForNewEntry) return entryScale;
     return null;
-  }, [isExitPhase, isEntryPhase, readyForNewEntry]);
+  }, [isExitPhase, isEntryPhase, readyForNewEntry, entryScale, exitScale]);
 
   const previewTruck = useMemo(() => {
     if (activeOrder) {
@@ -406,7 +432,7 @@ export default function TruckEntry() {
     setActiveOrder(order);
     setErrorMsg(null);
     setMessage(
-      `Exit weigh for ${order.truck_plate ?? `Truck ${order.truck_id}`} — place on Scale 2, wait for STABLE, then Capture Exit.`
+      `Exit weigh for ${order.truck_plate ?? `Truck ${order.truck_id}`} — place on Scale ${exitScale}, wait for STABLE, then Capture Exit.`
     );
   }
 
@@ -416,7 +442,7 @@ export default function TruckEntry() {
     setActiveOrder(order);
     setErrorMsg(null);
     setMessage(
-      `Entry weigh for ${order.truck_plate ?? `Truck ${order.truck_id}`} — place on Scale 1, wait for STABLE, then Capture Weight.`
+      `Entry weigh for ${order.truck_plate ?? `Truck ${order.truck_id}`} — place on Scale ${entryScale}, wait for STABLE, then Capture Weight.`
     );
   }
 
@@ -653,7 +679,7 @@ export default function TruckEntry() {
   return (
     <WaterSystemLayout
       title="Weighbridge Entry"
-      subtitle="Scale 1 for entry · Scale 2 for exit — live capture from Baykon indicators"
+      subtitle="Choose the scale for entry and for exit — live capture from Baykon indicators"
     >
       <div className="wb-console space-y-4">
         {(message || errorMsg) && (
@@ -704,7 +730,7 @@ export default function TruckEntry() {
                 New Entry
               </h2>
               <p className="text-[11px] wb-text-muted mt-0.5">
-                Select truck and material — live Scale 1 weight appears, then Capture Entry
+                Select truck and material — the live weight of the chosen scale appears, then Capture Entry
               </p>
             </div>
             <Button
@@ -1175,6 +1201,30 @@ export default function TruckEntry() {
                 </div>
               </div>
 
+              <div className="space-y-1.5" data-testid="scale-choice">
+                <label className="text-[10px] uppercase tracking-wider wb-text-sec">
+                  Scale for this {isExitPhase ? "exit" : "entry"} weight
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([1, 2] as const).map((scale) => (
+                    <button
+                      key={scale}
+                      type="button"
+                      onClick={() => chooseScale(scale)}
+                      aria-pressed={chosenScale === scale}
+                      data-testid={`scale-choice-${scale}`}
+                      className={`h-10 rounded-md border text-sm font-semibold transition-colors ${
+                        chosenScale === scale
+                          ? "border-[#00D9FF] bg-[#00D9FF]/20 text-[#5CEBFF] light:border-cyan-600 light:bg-cyan-100 light:text-cyan-800"
+                          : "wb-border wb-text-sec hover:opacity-80"
+                      }`}
+                    >
+                      Scale {scale}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {lastCompleted && !isExitPhase && (
                 <Button
                   variant="outline"
@@ -1225,9 +1275,9 @@ export default function TruckEntry() {
 
               <p className="text-[10px] wb-text-muted leading-relaxed">
                 {isExitPhase
-                  ? `Entry ${fmtWeight(activeOrder?.first_weight_kg)} kg · place on Scale 2, wait for STABLE, then Capture Exit.`
+                  ? `Entry ${fmtWeight(activeOrder?.first_weight_kg)} kg · place on Scale ${exitScale}, wait for STABLE, then Capture Exit.`
                   : readyForNewEntry || isEntryPhase
-                    ? "Live Scale 1 weight shown — wait for STABLE, then Capture Entry (creates trip + saves weight)."
+                    ? `Live Scale ${entryScale} weight shown — wait for STABLE, then Capture Entry (creates trip + saves weight).`
                     : "Select truck & material above — live weight starts, then Capture Entry in one click."}
               </p>
             </section>

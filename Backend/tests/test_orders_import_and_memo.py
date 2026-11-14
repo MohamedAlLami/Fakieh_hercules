@@ -89,6 +89,17 @@ class MemoTests(unittest.TestCase):
         self.assertNotIn("<4471>", page)
         self.assertIn("QMS : F/TRN/04", page)
 
+    def test_operation_number_is_the_order_number_when_the_trip_has_an_order(self):
+        self.assertEqual("564025", memo.memo_values(dict(TRIP, order_no=564025))["operationNo"])
+        self.assertEqual("TE-BE722FC0", memo.memo_values(dict(TRIP, order_no=None))["operationNo"])
+
+    def test_several_trips_make_one_document_with_a_page_each(self):
+        page = memo.build_memos_html([dict(TRIP, order_no=7), dict(TRIP, ticket="TE-2")])
+        self.assertEqual(2, page.count('class="sheet"'))
+        self.assertEqual(1, page.count("<html>"))
+        self.assertIn('data-memo="operationNo">7<', page)
+        self.assertIn('data-memo="operationNo">TE-2<', page)
+
     def test_file_name_is_safe(self):
         self.assertEqual("Dispatch-Memo-TE-1.pdf", memo.memo_file_name({"ticket": 'TE-1"/..\\'}))
 

@@ -77,8 +77,11 @@ def memo_values(trip: Mapping[str, Any]) -> Dict[str, str]:
     """The values that go on the paper. `trip` is a weighbridge trip as the API returns it."""
     product = " - ".join(str(x) for x in (trip.get("material_name"), trip.get("material_code")) if x)
     bags = trip.get("bags")
+    # The operation number is the order number from order entry; a trip without an order
+    # falls back to its own ticket so the paper is never without a reference.
+    order_no = trip.get("order_no")
     return {
-        "operationNo": str(trip.get("ticket") or ""),
+        "operationNo": str(order_no) if order_no not in (None, "") else str(trip.get("ticket") or ""),
         "date": _fmt_date(trip.get("second_ts") or trip.get("first_ts") or trip.get("created_at")),
         "clientName": str(trip.get("order_client_name") or ""),
         "product": product,
@@ -122,7 +125,8 @@ _STYLE = """
     * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     html, body { margin: 0; padding: 0; background: #fff; color: #000; }
     body { font-family: "Segoe UI", Tahoma, Arial, sans-serif; font-size: 11.5pt; }
-    .sheet { min-height: 271mm; display: flex; flex-direction: column; }
+    .sheet { min-height: 271mm; display: flex; flex-direction: column; break-after: page; page-break-after: always; }
+    .sheet:last-child { break-after: auto; page-break-after: auto; }
     .ar { direction: rtl; unicode-bidi: isolate; font-family: "Segoe UI", Tahoma, Arial, sans-serif; }
     .head { display: flex; justify-content: space-between; align-items: flex-start; }
     .pill { margin: 3mm 0 0 34mm; background: #000; color: #fff; border-radius: 9mm; padding: 2.6mm 9mm 3mm; text-align: center; font-weight: 700; line-height: 1.35; }
@@ -150,6 +154,29 @@ _STYLE = """
 
 
 def build_memo_html(trip: Mapping[str, Any]) -> str:
+    return build_memos_html([trip])
+
+
+def build_memos_html(trips: List[Mapping[str, Any]]) -> str:
+    """One printable document with one memo page per trip."""
+    sheets = "\n".join(_sheet(trip) for trip in trips)
+    title = "Dispatch and Receive Memo"
+    if len(trips) == 1:
+        title += " " + _esc(memo_values(trips[0])["operationNo"])
+    return """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>%s</title>
+  <style>%s  </style>
+</head>
+<body>
+%s
+</body>
+</html>""" % (title, _STYLE, sheets)
+
+
+def _sheet(trip: Mapping[str, Any]) -> str:
     v = memo_values(trip)
     sections = "\n".join(
         [
@@ -175,15 +202,7 @@ def build_memo_html(trip: Mapping[str, Any]) -> str:
             ]),
         ]
     )
-    return """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>Dispatch and Receive Memo %(op)s</title>
-  <style>%(style)s  </style>
-</head>
-<body>
-  <div class="sheet">
+    return """  <div class="sheet">
     <div class="head">
       <div class="pill"><span class="ar">مذكرة إخراج واستلام</span><span class="en">Dispatch and Receive Memo</span></div>
       <div class="brand">
@@ -205,12 +224,9 @@ def build_memo_html(trip: Mapping[str, Any]) -> str:
       <div class="ar">جدة - حي المدينة الصناعية - المدخل الشمالي - ص.ب : ٨٧٦٣/٦٠٠٢ - الرمز البريدي : ٢١٤٩٢</div>
       <div class="ar">هاتف : ٠٠٩٦٦١٢٥٥٦٢٨٠٧/٠٠٩٦٦١٢٦٣٦٣٨٣٦ - س.ت : ٤٠٣٠١٦٩٦٠١ - <span dir="ltr">E.mail : feed@fakiehgroup.com</span></div>
     </div>
-  </div>
-</body>
-</html>""" % {
+  </div>""" % {
         "op": _esc(v["operationNo"]),
         "date": _esc(v["date"]),
-        "style": _STYLE,
         "logo": FAKIEH_WORDMARK,
         "sections": sections,
         "notes": _esc(v["notes"]) or "&nbsp;",

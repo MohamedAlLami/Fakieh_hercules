@@ -30,6 +30,7 @@ import { useMaterialCodes } from "../../constants/materialCodes";
 import { useRowSelection } from "../../hooks/useRowSelection";
 import { printTable, rowsToPrint } from "../../utils/printTable";
 import { MemoActionsDialog } from "../../components/water-system/MemoDialogs";
+import { printMemos } from "../../utils/printMemo";
 import { exportTableToExcel, type ExportColumn } from "../../utils/exportTable";
 
 function fmtTime(ts?: string | null) {
@@ -187,17 +188,10 @@ export default function Weighbridge() {
     return { rows, columns, subtitles, net, label, blanks, kg };
   }
 
+  /** Print gives the Dispatch and Receive Memo, one page per trip (ticked trips, or all shown). */
   async function handlePrint() {
     const t = logTable();
-    const err = await printTable({
-      title: "Weighbridge Log",
-      subtitles: t.subtitles,
-      rows: t.rows,
-      landscape: true,
-      columns: t.columns,
-      footer: [t.label, ...t.blanks, t.kg(t.net)],
-    });
-    setErrorMsg(err);
+    setErrorMsg(await printMemos(t.rows.map((row) => row.id)));
   }
 
   async function handleExcel() {

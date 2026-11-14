@@ -566,6 +566,43 @@ def memo_pdf(order_id: int):
     })
 
 
+MEMO_BATCH_MAX = 300
+
+
+def _memo_trips(raw_ids: str):
+    """Trips for a list of ids (?ids=1,2,3), in the order asked. Returns (trips, error)."""
+    ids = []
+    for part in str(raw_ids or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            return None, "ids must be trip numbers separated by commas"
+        if int(part) not in ids:
+            ids.append(int(part))
+    if not ids:
+        return None, "no trips were chosen"
+    if len(ids) > MEMO_BATCH_MAX:
+        return None, f"at most {MEMO_BATCH_MAX} memos can be printed at once"
+    orders = {o.id: o for o in TruckWeighOrder.query.filter(TruckWeighOrder.id.in_(ids)).all()}
+    truck_map, driver_map = _enrich_truck_maps({o.truck_id for o in orders.values()})
+    return [_order_dict(orders[i], truck_map, driver_map) for i in ids if i in orders], None
+
+
+@truck_entry_bp.route("/memos.html", methods=["GET"])
+def memos_html():
+    """Several memos in one printable document, one page per trip (?ids=1,2,3)."""
+    from flask import Response
+    from services import dispatch_memo
+
+    trips, error = _memo_trips(request.args.get("ids"))
+    if error:
+        return jsonify({"error": error}), 400
+    if not trips:
+        return jsonify({"error": "none of these trips exist"}), 404
+    return Response(dispatch_memo.build_memos_html(trips), mimetype="text/html; charset=utf-8")
+
+
 @truck_entry_bp.route("/memo-pdf/status", methods=["GET"])
 def memo_pdf_status():
     """Can this machine make the memo PDF? ?refresh=1 tries again now."""

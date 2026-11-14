@@ -34,8 +34,25 @@ export async function fetchMemoHtml(orderId: number): Promise<string> {
  * Returns an error text to show the user, or null when the dialog was asked for.
  */
 export async function printMemo(order: Pick<TruckWeighOrder, "id">): Promise<string | null> {
+  return printMemos([order.id]);
+}
+
+/** Most memos one print job may hold (the backend refuses more). */
+export const MEMO_BATCH_MAX = 300;
+
+/**
+ * Open the browser's print dialog with one memo page per trip, in the order given.
+ * Returns an error text to show the user, or null when the dialog was asked for.
+ */
+export async function printMemos(orderIds: number[]): Promise<string | null> {
+  if (orderIds.length === 0) return "Nothing to print";
+  if (orderIds.length > MEMO_BATCH_MAX) {
+    return `Too many trips for one print (${orderIds.length}). Tick up to ${MEMO_BATCH_MAX} and print again.`;
+  }
   try {
-    const html = await fetchMemoHtml(order.id);
+    const res = await fetch(`${API_BASE_URL}/truck-entry/memos.html?ids=${orderIds.join(",")}`);
+    if (!res.ok) throw new Error(await errorText(res, "Could not load the memos"));
+    const html = await res.text();
     document.getElementById(FRAME_ID)?.remove();
     const frame = document.createElement("iframe");
     frame.id = FRAME_ID;
