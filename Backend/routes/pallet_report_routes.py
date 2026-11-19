@@ -87,12 +87,35 @@ def _filtered_history_query():
             PalletReport.recorded_at >= _parse_datetime(request.args["start_date"])
         )
     if request.args.get("end_date"):
-        query = query.filter(
-            PalletReport.recorded_at <= _parse_datetime(
-                request.args["end_date"], end_of_date=True
-            )
-        )
+        end_raw = request.args["end_date"].strip()
+        end = _parse_datetime(end_raw, end_of_date=True)
+        if len(end_raw) == 10:
+            # A bare date covers that whole day.
+            query = query.filter(PalletReport.recorded_at <= end)
+        else:
+            # A time is where the next period starts (12:00 AM): the minute at that time belongs
+            # to the next period, so consecutive days never count the same minute twice.
+            query = query.filter(PalletReport.recorded_at < end)
     return query
+
+
+def _minutes_before_period():
+    """{line: last stored minute before the chosen start}, to split a run that crosses it."""
+    if not request.args.get("start_date"):
+        return {}
+    start = _parse_datetime(request.args["start_date"])
+    line = request.args.get("line", "ALL").strip().upper()
+    lines = VALID_LINES[1:] if line == "ALL" else (line,)
+    out = {}
+    for name in lines:
+        row = (
+            PalletReport.query.filter(PalletReport.line == name, PalletReport.recorded_at < start)
+            .order_by(PalletReport.recorded_at.desc(), PalletReport.id.desc())
+            .first()
+        )
+        if row is not None:
+            out[name] = row
+    return out
 
 
 def _filtered_history_sessions():
@@ -101,7 +124,7 @@ def _filtered_history_sessions():
         .order_by(PalletReport.line, PalletReport.recorded_at, PalletReport.id)
         .all()
     )
-    sessions = build_history_sessions(rows)
+    sessions = build_history_sessions(rows, before_period=_minutes_before_period())
     status = request.args.get("status", "ALL").strip().upper()
     if status not in VALID_STATUSES:
         raise ValueError("status must be ALL, RUNNING, or COMPLETED")

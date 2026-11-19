@@ -292,10 +292,30 @@ def build_snapshot_rows(
     return rows
 
 
+def period_start_baseline(first: Any, before: Any, session_gap_seconds: int) -> Optional[float]:
+    """The counter value a run already had when the report period started, or None.
+
+    `before` is the last stored minute of the same line before the period. When it is close
+    enough to the run's first minute in the period, the run was already going (an order that
+    crosses midnight, for example) and its counter kept counting from the order start, so this
+    part of the run only produced what was added after `before`.
+    """
+    if before is None or first is None:
+        return None
+    gap = (first.recorded_at - before.recorded_at).total_seconds()
+    if gap < 0 or gap > session_gap_seconds:
+        return None
+    qty = getattr(before, "quantity", None)
+    if qty is None or qty < 0:
+        return None
+    return float(qty)
+
+
 def build_history_sessions(
     snapshots: List[Any],
     now: Optional[datetime] = None,
     session_gap_seconds: int = PALLET_HISTORY_SESSION_GAP_SECONDS,
+    before_period: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Collapse consecutive minute snapshots into one production run per line.
 
@@ -306,6 +326,11 @@ def build_history_sessions(
 
     Full run = from the first minute to the end. Actual run = only the minutes
     in which the line was really running.
+
+    before_period: {line: last stored minute before the report period}. A run that was
+    already going when the period started gets only the part produced inside the period:
+    Product KG = last reading - the reading at the period start. A run that started inside
+    the period starts from 0 as before.
     """
     current_time = now or datetime.now(timezone.utc)
     ordered = sorted(snapshots, key=lambda row: (row.line, row.recorded_at, row.id))
@@ -344,6 +369,18 @@ def build_history_sessions(
             else:
                 actual_seconds = min(full_seconds, running_minutes * PALLET_HISTORY_SAMPLE_SECONDS)
             paused_now = running and not getattr(last, "running", True)
+            baseline = None
+            if sequence == 1 and before_period:
+                baseline = period_start_baseline(
+                    first, before_period.get(line), session_gap_seconds
+                )
+            last_qty = last.quantity
+            if baseline is not None and last_qty is not None and last_qty >= baseline:
+                produced = round(last_qty - baseline, 3)
+            else:
+                # Started inside the period (or the counter was reset): count from 0.
+                baseline = None
+                produced = last_qty
             # The material the silos held on the latest minute that recorded one.
             material_row = next(
                 (row for row in reversed(session_rows) if getattr(row, "material_code", None)),
@@ -388,10 +425,12 @@ def build_history_sessions(
                     "destination2": last.destination2,
                     "production_name": getattr(material_row, "material_name", None),
                     "material": getattr(material_row, "material_code", None),
-                    "start_qty": first.quantity,
+                    "start_qty": baseline if baseline is not None else first.quantity,
                     "latest_qty": last.quantity,
                     "final_qty": None if running else last.quantity,
-                    "product_kg": last.quantity,
+                    "product_kg": produced,
+                    "continued_from_before_period": baseline is not None,
+                    "qty_at_period_start": baseline,
                     "running": running,
                     "status": "RUNNING" if running else "COMPLETED",
                     "selection": last.selection,
